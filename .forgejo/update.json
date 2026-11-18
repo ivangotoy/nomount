@@ -1,6 +1,6 @@
 {
-  "version": "v2.3.0 (773-89b0abf-dev)-ci2",
-  "versionCode": 773,
-  "zipUrl": "https://git.digtvbg.com/ivangotoy/nomount/releases/download/v2.3.0-773-89b0abf-dev-ci2/NoMount-v2.3.0-773-89b0abf-dev-ci2.zip",
-  "changelog": "https://git.digtvbg.com/ivangotoy/nomount/raw/commit/89b0abf5481ea5ec556021ae63523762ba81c43a/CHANGELOG.md"
+  "version": "v2.3.0 (775-13f8e43-dev)-ci3",
+  "versionCode": 775,
+  "zipUrl": "https://git.digtvbg.com/ivangotoy/nomount/releases/download/v2.3.0-775-13f8e43-dev-ci3/NoMount-v2.3.0-775-13f8e43-dev-ci3.zip",
+  "changelog": "https://git.digtvbg.com/ivangotoy/nomount/raw/commit/13f8e43d0fdccd2da98116155ea6e771f21a9502/CHANGELOG.md"
 }
