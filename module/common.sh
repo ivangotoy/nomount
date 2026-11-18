@@ -63,6 +63,7 @@ _lock_acquire() {
                 klogwarn "cleaning stale lock $lockdir"
                 rm -rf "$claimed"
             fi
+            unowned=0
         fi
         n=$((n + 1))
         if [ "$n" -ge "$timeout" ]; then

@@ -241,6 +241,15 @@ grep -q '^rm -rf /data/adb/nomount/ ' "$R/module/uninstall.sh" && grep -q 'NOMOU
     ok "uninstall.sh removes the data dir that holds the fallback ko" || bad "fallback ko not under the uninstalled data dir"
 rm -f "$M/lkm/nomount.ko"
 
+# after a takeover, a lock that another waiter re-creates at once starts a new count (mv stub re-creates it once)
+reset_state; mkdir "$D/.boot.lock"; mkdir -p "$W/mvstub"
+printf '#!/bin/sh\necho "mv $*" >> "$NM_STUB_LOG"\n/bin/mv "$@" || exit\n[ -e "$NM_STUB_LOG.recreated" ] || { touch "$NM_STUB_LOG.recreated"; mkdir "$1"; }\n' > "$W/mvstub/mv"
+chmod +x "$W/mvstub/mv"
+PATH="$W/mvstub:$PATH" MODDIR=$M sh -c '. "$MODDIR/common.sh"; _lock_acquire "$NOMOUNT_DATA/.boot.lock" 5' > "$W/script.out" 2>&1; rc=$?
+rm -f "$L.recreated"
+[ "$(grep -c '^mv ' "$L")" -eq 1 ] && ok "_lock_acquire: a re-created lock is not taken over on the old count" ||
+    bad "_lock_acquire took over a re-created lock early (rc=$rc): $(grep '^mv ' "$L" | wc -l) takeovers"
+
 # bootloop_check runs twice per boot (metamount.sh and post-fs-data.sh); here boot_id is unreadable
 # and the wall clock ticks between the calls
 printf '#!/bin/sh\nn=$(cat "$NM_DATE_FILE" 2>/dev/null || echo 1000); echo $((n + 1)) > "$NM_DATE_FILE"; echo "$n"\n' > "$S/date"
