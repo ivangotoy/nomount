@@ -103,7 +103,7 @@ You can restrict any rule to specific User IDs or ranges. This is useful for inj
 | `--uid <id>` | Apply the rule only to a specific UID. |
 | `--uid-range <a>-<b>` | Apply the rule to a range of UIDs. |
 | `--uid-range all` | Apply to all (this is the default behavior). |
-| `--uid-excluded <c>-<d>`| Apply to all UIDs *except* the specified range. |
+| `--uid-excluded <c>-<d>`| Leave the range out of the rule's `--uid` / `--uid-range` scope. The range must lie inside that scope, so "all UIDs except c-d" is `--uid-range all --uid-excluded <c>-<d>`. |
 
 *Note: You can combine these flags with `add` or `del` commands.*
 
