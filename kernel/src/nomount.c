@@ -224,7 +224,7 @@ static NM_ACTOR_RET nm_actor_proxy(struct dir_context *ctx, const char *name, in
     struct dir_context *orig_ctx = proxy->orig_ctx;
     NM_ACTOR_RET ret;
 
-    {
+    if (likely(namelen > 0 && !(namelen <= 2 && name[0] == '.' && (namelen == 1 || name[1] == '.')))) {
         rcu_guard();
         struct nm_leaf *leaf = nm_find_leaf_in_dir(proxy->dir_node, name, namelen);
         struct nm_rule *rule = leaf ? nm_select_rule(leaf, proxy->fsuid) : NULL;
@@ -752,17 +752,30 @@ static ssize_t nm_write_iter(struct kiocb *iocb, struct iov_iter *from)
     return ret;
 }
 
+static inline void nm_clear_inode_private(struct inode *inode)
+{
+    unsigned int old, flags = READ_ONCE(inode->i_flags);
+    while (unlikely(flags & S_PRIVATE)) {
+        old = cmpxchg(&inode->i_flags, flags, flags & ~S_PRIVATE);
+        if (likely(old == flags))
+            break;
+        flags = old;
+    }
+}
+
 static int nm_mmap(struct file *file, struct vm_area_struct *vma)
 {
     int ret = generic_file_mmap(file, vma);
-    return ret ? ret : (file_inode(file)->i_flags &= ~S_PRIVATE, 0);
+    if (!ret) nm_clear_inode_private(file_inode(file));
+    return ret;
 }
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 16, 0)
 static int nm_mmap_prepare(struct vm_area_desc *desc)
 {
     int ret = generic_file_mmap_prepare(desc);
-    return ret ? ret : (file_inode(desc->file)->i_flags &= ~S_PRIVATE, 0);
+    if (!ret) nm_clear_inode_private(file_inode(desc->file));
+    return ret;
 }
 #endif
 
@@ -1070,8 +1083,9 @@ static int nm_d_revalidate_common(struct inode *parent_inode, const struct qstr 
         parent_dir = rcu_dereference(iop->dir_node);
     }
 
-    struct nm_inode_info *bound = inode && inode->i_op == &nm_file_iops ? rcu_dereference(inode->i_private) : NULL;
-    struct nm_leaf *leaf = bound ? bound->leaf : NULL;
+    struct nm_inode_info *bound = inode && nm_inode_is_virtual(inode) ? rcu_dereference(inode->i_private) : NULL;
+    struct nm_leaf *leaf = !bound ? NULL : inode->i_op == &nm_file_iops ? bound->leaf :
+                           bound->dir_node ? smp_load_acquire(&bound->dir_node->owner) : NULL;
     if (!leaf || leaf->parent_dir != parent_dir || !nm_child_matches(leaf, name->name, name->len) || !rcu_access_pointer(leaf->rules))
         leaf = nm_find_leaf_in_dir(parent_dir, name->name, name->len);
     if (leaf && !(uid_blocked = nm_is_uid_blocked((fsuid = current_fsuid().val))) && (rule = nm_select_rule(leaf, fsuid))) {
@@ -1693,10 +1707,9 @@ static void nm_resolve_anchor_locked(struct nm_leaf *leaf)
         ops = nm_get_nm_iop(smp_load_acquire(&inode->i_op));
         if (!ops) ops = nm_get_nm_fop(smp_load_acquire(&inode->i_fop));
         dir = ops ? ops->dir_node : NULL;
-        if (dir && !dir->owner) {
+        if (dir && !READ_ONCE(dir->owner)) {
             leaf->this_dir = dir;
             atomic_inc(&dir->refs);
-            dir->owner = leaf;
         }
     }
 }
@@ -1705,7 +1718,7 @@ static void nm_free_leaf(struct nm_leaf *leaf, bool deferred)
 {
     if (leaf->anchor.dentry) path_put(&leaf->anchor);
     if (leaf->this_dir) {
-        if (leaf->this_dir->owner == leaf) leaf->this_dir->owner = NULL;
+        if (READ_ONCE(leaf->this_dir->owner) == leaf) WRITE_ONCE(leaf->this_dir->owner, NULL);
         nm_dir_put(leaf->this_dir);
     }
     nm_dir_put(leaf->parent_dir);
@@ -1789,7 +1802,7 @@ static void nm_publish_rules_locked(struct nm_leaf *leaf, struct nm_rule_array *
 static void nm_retire_leaf_locked(struct nm_leaf *leaf)
 {
     struct nm_rule_array *array = rcu_dereference_protected(leaf->rules, lockdep_is_held(&nm_mutex));
-    if (leaf->this_dir) leaf->this_dir->owner = NULL;
+    if (leaf->this_dir) WRITE_ONCE(leaf->this_dir->owner, NULL);
     RCU_INIT_POINTER(leaf->rules, NULL);
     leaf->next = nm_retired_leaves;
     nm_retired_leaves = leaf;
@@ -1943,6 +1956,21 @@ static int nm_prune_empty_virtual_dirs_locked(struct nm_dir_node *dir)
 
 /*** Rule Operations ***/
 
+/* nm_actor_proxy() skips these, so the rule could never match on readdir. */
+static bool nm_vpath_has_dot_component(const char *path, u16 len)
+{
+    u16 i = 0;
+
+    while (i < len) {
+        u16 start = i;
+        while (i < len && path[i] != '/') i++;
+        if (i - start == 1 && path[start] == '.') return true;
+        if (i - start == 2 && path[start] == '.' && path[start + 1] == '.') return true;
+        i++;
+    }
+    return false;
+}
+
 static int nm_add_rule_locked(const char *v_path, const char *r_path, u16 v_len, u16 r_len, u32 flags,
                               unsigned int uid, unsigned int uid_end, unsigned int deny_start, unsigned int deny_end)
 {
@@ -1960,6 +1988,8 @@ static int nm_add_rule_locked(const char *v_path, const char *r_path, u16 v_len,
     if (v_len <= 1 || v_path[0] != '/' || uid > uid_end) return -EINVAL;
     for (u16 i = 1; i < v_len; i++)
         if (!v_path[i] || (v_path[i] == '/' && v_path[i - 1] == '/')) return -EINVAL;
+    if (nm_vpath_has_dot_component(v_path, v_len))
+        return -EINVAL;
 
     if (deny_start || deny_end) {
         if (!deny_start || !deny_end) return -EINVAL;
@@ -2015,12 +2045,12 @@ static int nm_add_rule_locked(const char *v_path, const char *r_path, u16 v_len,
     for (int i = pos + replace; i < count; i++, j++) nm_copy_rule(&array->rules[j], &old->rules[i]);
     array->uid_count = new_count - (!array->rules[0].target_uid && !array->rules[0].uid_end);
 
-    if (new_dir) {
+    if (new_dir)
         leaf->this_dir = new_dir;
-        new_dir->owner = leaf;
-    }
     if (fresh) {
         RCU_INIT_POINTER(leaf->rules, array);
+        if (leaf->this_dir && !READ_ONCE(leaf->this_dir->owner))
+            smp_store_release(&leaf->this_dir->owner, leaf);
         if ((err = nm_generate_virtual_topology(leaf, uid))) {
             nm_delete_child_locked(leaf, false);
             nm_retire_leaf_locked(leaf);
@@ -2028,6 +2058,8 @@ static int nm_add_rule_locked(const char *v_path, const char *r_path, u16 v_len,
         }
         hash_add(nm_leaves_ht, &leaf->ht_node, leaf->v_hash);
     } else {
+        if (new_dir)
+            smp_store_release(&new_dir->owner, leaf);
         nm_publish_rules_locked(leaf, array, old);
     }
 
@@ -2113,12 +2145,17 @@ static void nm_clear_state(int clear_flags)
 
 /*** Payload Communication API ***/
 
+#define NM_LIST_SKIP_BITS 20
+#define NM_LIST_IDX_MASK ((1U << NM_LIST_SKIP_BITS) - 1U)
+
 static int nm_process_payload(unsigned long user_addr)
 {
     struct nm_payload *payload;
     struct page *page;
     unsigned long pg_off = offset_in_page(user_addr);
     char *buf_ptr, *buf_end;
+
+    BUILD_BUG_ON(NM_LEAF_HT_BITS + NM_LIST_SKIP_BITS > 32);
 
     if (pg_off + sizeof(*payload) > PAGE_SIZE || get_user_pages_fast(user_addr, 1, FOLL_WRITE, &page) != 1) 
         return -EFAULT;
@@ -2217,55 +2254,57 @@ static int nm_process_payload(unsigned long user_addr)
             break;
 
         case NM_CMD_GET_LIST: {
-            if (payload->arg1 == ~0U) { payload->data_size = 0; break; }
-            int current_idx = 0;
-            int bkt;
+            u32 start_bkt = payload->arg1 >> NM_LIST_SKIP_BITS, skip = payload->arg1 & NM_LIST_IDX_MASK;
+            u32 bkt, bkt_idx = 0, next_arg = ~0U;
+            if (start_bkt >= HASH_SIZE(nm_leaves_ht)) { payload->data_size = 0; payload->arg1 = ~0U; break; }
             buf_ptr = payload->buffer;
             buf_end = payload->buffer + sizeof(payload->buffer);
 
             mutex_lock(&nm_mutex);
-            struct nm_leaf *leaf;
-            hash_for_each(nm_leaves_ht, bkt, leaf, ht_node) {
-                struct nm_rule_array *rules = rcu_dereference_protected(leaf->rules, lockdep_is_held(&nm_mutex));
-                if (!rules) continue;
-                for (int i = 0; i < rules->count; i++) {
-                    struct nm_rule *r = &rules->rules[i];
-                    char *p = NULL;
-                    int r_len_str = 0;
-                    if (current_idx++ < payload->arg1) continue;
+            for (bkt = start_bkt; bkt < HASH_SIZE(nm_leaves_ht); bkt++) {
+                struct nm_leaf *leaf;
+                bkt_idx = 0;
+                hlist_for_each_entry(leaf, &nm_leaves_ht[bkt], ht_node) {
+                    struct nm_rule_array *rules = rcu_dereference_protected(leaf->rules, lockdep_is_held(&nm_mutex));
+                    if (!rules) continue;
+                    for (int i = 0; i < rules->count; i++, bkt_idx++) {
+                        struct nm_rule *r = &rules->rules[i];
+                        char *p = NULL;
+                        int r_len_str = 0;
+                        if (bkt == start_bkt && bkt_idx < skip) continue;
 
-                    size_t head_len = sizeof(struct nm_rule_hdr) + leaf->v_len;
-                    if (head_len > (size_t)(buf_end - buf_ptr)) goto list_full;
-                    if (r->r_path.dentry) {
-                        p = d_path(&r->r_path, buf_ptr + head_len, buf_end - (buf_ptr + head_len));
-                        if (IS_ERR(p)) {
-                            if (PTR_ERR(p) == -ENAMETOOLONG) goto list_full;
-                            payload->status = PTR_ERR(p);
-                            goto list_done;
+                        size_t head_len = sizeof(struct nm_rule_hdr) + leaf->v_len;
+                        if (head_len > (size_t)(buf_end - buf_ptr)) goto list_full;
+                        if (r->r_path.dentry) {
+                            p = d_path(&r->r_path, buf_ptr + head_len, buf_end - (buf_ptr + head_len));
+                            if (IS_ERR(p)) {
+                                if (PTR_ERR(p) == -ENAMETOOLONG) goto list_full;
+                                payload->status = PTR_ERR(p);
+                                goto list_done;
+                            }
+                            r_len_str = strnlen(p, buf_end - p);
                         }
-                        r_len_str = strnlen(p, buf_end - p);
-                    }
 
-                    if (head_len + r_len_str > (size_t)(buf_end - buf_ptr)) goto list_full;
-                    if (p && p != buf_ptr + head_len) memmove(buf_ptr + head_len, p, r_len_str);
-                    *(struct nm_rule_hdr *)buf_ptr = (struct nm_rule_hdr){
-                        .flags = r->flags, .v_len = leaf->v_len, .r_len = r_len_str,
-                        .uid = r->target_uid, .uid_end = r->uid_end,
-                        .deny_start = r->deny_start, .deny_end = r->deny_end
-                    };
-                    buf_ptr += sizeof(struct nm_rule_hdr);
-                    memcpy(buf_ptr, leaf->paths, leaf->v_len); buf_ptr += leaf->v_len + r_len_str;
+                        if (head_len + r_len_str > (size_t)(buf_end - buf_ptr)) goto list_full;
+                        if (p && p != buf_ptr + head_len) memmove(buf_ptr + head_len, p, r_len_str);
+                        *(struct nm_rule_hdr *)buf_ptr = (struct nm_rule_hdr){
+                            .flags = r->flags, .v_len = leaf->v_len, .r_len = r_len_str,
+                            .uid = r->target_uid, .uid_end = r->uid_end,
+                            .deny_start = r->deny_start, .deny_end = r->deny_end
+                        };
+                        buf_ptr += sizeof(struct nm_rule_hdr);
+                        memcpy(buf_ptr, leaf->paths, leaf->v_len); buf_ptr += leaf->v_len + r_len_str;
+                    }
                 }
             }
-            current_idx = -1;
             goto list_done;
         list_full:
-            current_idx--;
-            if (current_idx == (int)payload->arg1) payload->status = -ENAMETOOLONG;
+            if (buf_ptr == payload->buffer) payload->status = -ENAMETOOLONG;
+            next_arg = (bkt << NM_LIST_SKIP_BITS) | (bkt_idx & NM_LIST_IDX_MASK);
         list_done:
             mutex_unlock(&nm_mutex);
             payload->data_size = buf_ptr - payload->buffer;
-            payload->arg1 = current_idx;
+            payload->arg1 = next_arg;
             break;
         }
 
