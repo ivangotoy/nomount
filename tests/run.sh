@@ -40,6 +40,25 @@ else skp "node --check module/webroot/index.js (node missing)"; fi
 if have node; then check "WebUI shell commands quote or number-check every value" node "$R/tests/webui_exec.js" "$R/module/webroot/index.js"
 else skp "WebUI shell command check (node missing)"; fi
 
+# --- build() downloads are pinned and hash-checked
+C="$R/.forgejo/module-ci.conf"
+grep -q 'master' "$C" && bad "module-ci.conf: zig master lookup present" || ok "module-ci.conf: no zig master lookup"
+grep -n 'curl ' "$C" | grep -v '^[0-9]*:fetch() ' > "$W/curls"
+[ ! -s "$W/curls" ] && ok "module-ci.conf: every download goes through fetch()" || bad "module-ci.conf: curl outside fetch(): $(cat "$W/curls")"
+n=$(grep -c '^ *fetch https://' "$C"); h=$(grep -cE '^ *fetch https://[^ ]+ [^ ]+ [0-9a-f]{64}$' "$C")
+[ "$n" -ge 3 ] && [ "$n" -eq "$h" ] && ok "module-ci.conf: $n downloads pinned by sha256" || bad "module-ci.conf: $h of $n downloads carry a sha256"
+grep -qE 'git -C "\$T/lkmloader" checkout -q [0-9a-f]{40}$' "$C" && ok "module-ci.conf: lkmloader pinned to a commit" || bad "module-ci.conf: lkmloader not pinned"
+if have bash && grep -q '^fetch() ' "$C"; then
+    mkdir -p "$W/fstub"; printf '#!/bin/sh
+while [ "$1" != -o ]; do shift; done; echo payload > "$2"
+' > "$W/fstub/curl"; chmod +x "$W/fstub/curl"
+    good=$(echo payload | sha256sum | cut -d' ' -f1)
+    PATH="$W/fstub:$PATH" bash -c 'set -euo pipefail; eval "$(grep "^fetch() " "$1")"; fetch https://x/f "$2/f1" "$3"; echo reached' sh "$C" "$W" "$good" > "$W/f.out" 2>&1 &&
+        grep -q reached "$W/f.out" && ok "fetch(): matching sha256 accepted" || bad "fetch() good hash: $(cat "$W/f.out")"
+    PATH="$W/fstub:$PATH" bash -c 'set -euo pipefail; eval "$(grep "^fetch() " "$1")"; fetch https://x/f "$2/f2" 0000000000000000000000000000000000000000000000000000000000000000; echo reached' sh "$C" "$W" > "$W/f.out" 2>&1
+    rc=$?; [ "$rc" -ne 0 ] && ! grep -q reached "$W/f.out" && ok "fetch(): sha256 mismatch stops the build" || bad "fetch() bad hash (rc=$rc)"
+fi
+
 # --- lkmloader: make names the arm64 build lkmloader-aarch64, customize.sh moves bin/lkmloader-$ARCH_BIN (arm64)
 for f in "$R/.github/workflows/build.yml" "$R/.forgejo/module-ci.conf"; do
     if grep -q 'make TARGET=aarch64' "$f"; then
