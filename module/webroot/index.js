@@ -157,6 +157,7 @@ const NM_DATA = "/data/adb/nomount";
 const NM_BIN = "/data/adb/modules/nomount/bin/nm";
 const FILES = { disable: `${NM_DATA}/disable`, exclusions: `${NM_DATA}/.exclusion_list.json`, isolated: `${NM_DATA}/.block_isolated_uids`, theme: `${NM_DATA}/theme.json`, dump_rules: `${NM_DATA}/dump_rules` };
 const shellQuote = (s) => "'" + String(s).replace(/'/g, "'\\''") + "'";
+const shellNum = (v) => { const s = String(v).trim(); if (!/^\d+$/.test(s)) throw new Error(`not a number: ${s}`); return s; };
 const APP_ICON_FALLBACK = "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0iIzgwODA4MCI+PHBhdGggZD0iTTEyIDJDNi40OCAyIDIgNi40OCAyIDEyczQuNDggMTAgMTAgMTAgMTAtNC40OCAxMC0xMFMxNy41MiAyIDEyIDJ6bTAgMThjLTQuNDEgMC04LTMuNTktOC04czMuNTktOCA4LTggOCAzLjU5IDggOC0zLjU5IDgtOCA4eiIvPjwvc3ZnPg==";
 const viewLoadState = { 'view-home': false, 'view-modules': false, 'view-exclusions': false, 'view-options': false };
 
@@ -489,7 +490,7 @@ async function tryGetMonetSeedFromSystem() {
         const tones = darkMode ? ['200', '300', '400', '500']
                                   : ['600', '700', '500', '400'];
         for (const tone of tones) {
-            const { stdout, errno } = await exec(`cmd overlay lookup android android:color/system_accent1_${tone} 2>/dev/null`);
+            const { stdout, errno } = await exec(`cmd overlay lookup android android:color/system_accent1_${shellNum(tone)} 2>/dev/null`);
             if (errno !== 0 || !stdout) continue;
             const hex = tryHex(stdout);
             if (hex) return hex;
@@ -588,7 +589,7 @@ async function syncThemeToDisk() {
     const config = { theme: activeTheme, material: isMaterial, color: customColor, seed: _nmSeed || null };
     const jsonStr = JSON.stringify(config);
     const b64 = btoa(unescape(encodeURIComponent(jsonStr)));
-    await exec(`mkdir -p ${NM_DATA} && echo "${b64}" | base64 -d > ${FILES.theme}.tmp && mv -f ${FILES.theme}.tmp ${FILES.theme}`);
+    await exec(`mkdir -p ${NM_DATA} && echo ${shellQuote(b64)} | base64 -d > ${FILES.theme}.tmp && mv -f ${FILES.theme}.tmp ${FILES.theme}`);
 }
 
 async function restoreThemeFromDisk() {
@@ -993,7 +994,7 @@ function parseExclusionsJson(text) {
 async function writeExclusionsJson(dataArray) {
     const jsonStr = JSON.stringify(dataArray);
     const b64 = btoa(unescape(encodeURIComponent(jsonStr))); 
-    const cmd = `mkdir -p ${NM_DATA} && echo "${b64}" | base64 -d > ${FILES.exclusions}.tmp && mv -f ${FILES.exclusions}.tmp ${FILES.exclusions}`;
+    const cmd = `mkdir -p ${NM_DATA} && echo ${shellQuote(b64)} | base64 -d > ${FILES.exclusions}.tmp && mv -f ${FILES.exclusions}.tmp ${FILES.exclusions}`;
     return await exec(cmd);
 }
 
@@ -1085,7 +1086,7 @@ async function getRealUidEntries() {
     if (userIds.length === 0) userIds = ['0'];
 
     const results = await Promise.all(userIds.map(userId =>
-        exec(`pm list packages -U --user ${userId} 2>/dev/null`)));
+        exec(`pm list packages -U --user ${shellNum(userId)} 2>/dev/null`)));
     results.forEach(({ stdout }, i) => {
         const userId = userIds[i];
         for (const line of stdout.split('\n')) {
@@ -1355,7 +1356,7 @@ function renderNextAppBatch() {
 async function removeExclusion(uid, name, domItem) {
     showToast(translate('unblocking_name', { name }));
     try {
-        const unblockResult = await exec(`${NM_BIN} uid del ${uid}`);
+        const unblockResult = await exec(`${NM_BIN} uid del ${shellNum(uid)}`);
         if (unblockResult.errno !== 0) throw new Error(unblockResult.stderr || 'Failed to unblock UID');
         const currentData = await readExclusionsJson();
         const newData = currentData.filter(app => String(app.uid) !== String(uid));
@@ -1378,7 +1379,7 @@ async function addExclusion(uid, label, pkg) {
     try {
         const currentData = await readExclusionsJson();
         const alreadySaved = currentData.some(app => String(app.uid) === uidStr);
-        const blockResult = await exec(`${NM_BIN} uid add ${uidStr}`);
+        const blockResult = await exec(`${NM_BIN} uid add ${shellNum(uidStr)}`);
         if (!alreadySaved) {
             currentData.push({ uid: uidStr, label: label, pkg: pkg });
             const persistResult = await writeExclusionsJson(currentData);
@@ -2004,7 +2005,7 @@ function initDelegationAndAttach() {
                     });
 
                     await writeExclusionsJson(currentData);
-                    await exec(`${NM_BIN} uid add ${uidsBash.join(' ')}`);
+                    await exec(`${NM_BIN} uid add ${uidsBash.map(shellNum).join(' ')}`);
                     showToast(`${appsToSave.size} apps added`);
                 } catch { showToast(translate('error_blocking') || 'Error'); }
                 await loadExclusions();

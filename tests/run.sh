@@ -37,6 +37,8 @@ for f in "$R"/.forgejo/workflows/*.yml "$R"/.github/workflows/*.yml "$R/module.y
 done
 if have node; then check "node --check module/webroot/index.js" node --check "$R/module/webroot/index.js"
 else skp "node --check module/webroot/index.js (node missing)"; fi
+if have node; then check "WebUI shell commands quote or number-check every value" node "$R/tests/webui_exec.js" "$R/module/webroot/index.js"
+else skp "WebUI shell command check (node missing)"; fi
 
 # --- nm with the three zig command lines of build() in .forgejo/module-ci.conf
 if have zig; then
