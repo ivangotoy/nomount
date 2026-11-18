@@ -1,7 +1,7 @@
 #!/system/bin/sh
 # Shared functions for NoMount's scripts
 
-NOMOUNT_DATA="/data/adb/nomount"
+NOMOUNT_DATA="${NOMOUNT_DATA:-/data/adb/nomount}"
 LOADER="$MODDIR/bin/nm"
 BOOT_SEMAPHORE="$NOMOUNT_DATA/.booting"
 DUMP_RULES_FLAG="$NOMOUNT_DATA/dump_rules"

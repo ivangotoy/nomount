@@ -2,7 +2,7 @@
 MODDIR=${0%/*}
 . "$MODDIR/common.sh"
 
-MODULES_DIR="/data/adb/modules"
+MODULES_DIR="${NOMOUNT_MODULES_DIR:-/data/adb/modules}"
 
 [ -d "$NOMOUNT_DATA" ] || mkdir -p "$NOMOUNT_DATA"
 
