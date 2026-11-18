@@ -47,7 +47,7 @@ try_load_ko() {
       return 0
     fi
     if echo "$output" | grep -qi "File exists"; then
-      return 0
+      return 3
     fi
     ui_print "  [!] $root_cmd insmod failed: $output"
   fi
@@ -56,26 +56,29 @@ try_load_ko() {
     return 0
   fi
 
+  # "File exists": a nomount driver is already loaded, so this one was checked but not loaded
   if echo "$output" | grep -qi "File exists"; then
-    return 0
+    return 3
   fi
 
   ui_print "  [!] lkmloader failed: $output"
   return 1
 }
 
+# returns 0 loaded, 3 not loadable while a driver runs (only with $4 = unproven), 2 none shipped, 1 failed
 load_ko_for_kernel() {
-  local kver="$1" akver="$2" arch_sfx="$3"
+  local kver="$1" akver="$2" arch_sfx="$3" unproven="$4"
   local exact="$MODPATH/lkm/nomount-${akver}-${kver}${arch_sfx}.ko"
-  local mod
+  local mod rc
   local found=0
 
   if [ -n "$akver" ] && [ -f "$exact" ]; then
     found=1
     ui_print "  [*] Trying: ${exact##*/}"
-    if try_load_ko "$exact"; then
+    try_load_ko "$exact"; rc=$?
+    if [ "$rc" = 0 ] || { [ "$rc" = 3 ] && [ -n "$unproven" ]; }; then
       mv "$exact" "$MODPATH/lkm/nomount.ko"
-      return 0
+      return "$rc"
     fi
   fi
 
@@ -84,9 +87,10 @@ load_ko_for_kernel() {
     [ "$mod" = "$exact" ] && continue
     found=1
     ui_print "  [*] Trying fallback: ${mod##*/}"
-    if try_load_ko "$mod"; then
+    try_load_ko "$mod"; rc=$?
+    if [ "$rc" = 0 ] || { [ "$rc" = 3 ] && [ -n "$unproven" ]; }; then
       mv "$mod" "$MODPATH/lkm/nomount.ko"
-      return 0
+      return "$rc"
     fi
   done
 
@@ -94,7 +98,7 @@ load_ko_for_kernel() {
   return 1
 }
 
-OLD_MODPATH="/data/adb/modules/nomount"
+OLD_MODPATH="${NOMOUNT_OLD_MODPATH:-/data/adb/modules/nomount}"
 KVER=$(uname -r | cut -d'.' -f1,2)
 AKVER=$(uname -r | grep -oE 'android[0-9]+')
 ARCH_SFX=""
@@ -110,6 +114,7 @@ API_RESPONDS=false
 LKM_RUNNING=false
 BUILTIN=false
 STAGED_FOR_REBOOT=false
+STAGED_UNPROVEN=false
 LOADED_FRESH=false
 
 ui_print "- Checking kernel support via internal API..."
@@ -120,7 +125,7 @@ elif [ -x "$OLD_MODPATH/bin/nm" ] && "$OLD_MODPATH/bin/nm" version >/dev/null 2>
 fi
 
 if [ "$API_RESPONDS" = true ]; then
-  if grep -q '^nomount ' /proc/modules; then
+  if grep -q '^nomount ' "${NOMOUNT_PROC_MODULES:-/proc/modules}"; then
     LKM_RUNNING=true
   else
     BUILTIN=true
@@ -135,12 +140,17 @@ elif [ "$LKM_RUNNING" = true ]; then
   ui_print "  [*] Active LKM detected."
   ui_print "  [*] Verifying new driver (no unload)..."
 
-  load_ko_for_kernel "$KVER" "$AKVER" "$ARCH_SFX"
+  load_ko_for_kernel "$KVER" "$AKVER" "$ARCH_SFX" unproven
   KO_RC=$?
 
   if [ "$KO_RC" = 0 ]; then
     STAGED_FOR_REBOOT=true
     ui_print "  [+] New driver verified and staged for the next reboot."
+  elif [ "$KO_RC" = 3 ]; then
+    STAGED_FOR_REBOOT=true
+    STAGED_UNPROVEN=true
+    ui_print "  [+] New driver passed the loader checks and is staged for the next reboot."
+    ui_print "      It cannot be loaded while the current driver runs."
   elif [ "$KO_RC" = 2 ]; then
     ui_print "  [*] No new KO shipped; keeping the running driver as is."
   else
@@ -240,12 +250,20 @@ else
   ui_print "  [OK] System is ready for injection."
 fi
 
-NOMOUNT_DATA="/data/adb/nomount"
+NOMOUNT_DATA="${NOMOUNT_DATA:-/data/adb/nomount}"
 mkdir -p "$NOMOUNT_DATA"
 rm -f "$NOMOUNT_DATA/.booting"
 
-mkdir -p "/data/adb/$ROOT_IMP/bin"
-if ln -sf "/data/adb/modules/nomount/bin/nm" "/data/adb/$ROOT_IMP/bin/nm"; then
+# the staged driver is unproven: keep the running one where boot can load it if the new one fails
+if [ "$STAGED_UNPROVEN" = true ] && [ "$NM_CURRENT_VER" -ge "$NM_REQUIRED_VER" ] && [ -f "$OLD_MODPATH/lkm/nomount.ko" ]; then
+  cp "$OLD_MODPATH/lkm/nomount.ko" "$NOMOUNT_DATA/nomount-fallback.ko" && ui_print "  [*] Current driver kept as boot fallback."
+elif [ "$BUILTIN" != true ]; then
+  rm -f "$NOMOUNT_DATA/nomount-fallback.ko"
+fi
+
+ROOT_BIN_DIR="${NOMOUNT_ROOT_BIN_DIR:-/data/adb/$ROOT_IMP/bin}"
+mkdir -p "$ROOT_BIN_DIR"
+if ln -sf "/data/adb/modules/nomount/bin/nm" "$ROOT_BIN_DIR/nm"; then
   ui_print "- Symlink created."
 else
   ui_print "! Failed to create 'nm' symlink, skipping.."

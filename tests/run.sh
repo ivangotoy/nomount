@@ -94,7 +94,7 @@ cp "$R"/module/*.sh "$R/module/module.prop" "$M/"
 cat > "$M/bin/nm" <<'EOF'
 #!/bin/sh
 echo "$*" >> "$NM_STUB_LOG"
-case $1 in version) [ -n "${NM_STUB_NO_DRIVER:-}" ] && exit 1; echo 23; exit 0 ;; esac
+case $1 in version) [ -n "${NM_STUB_NO_DRIVER:-}" ] && [ ! -e "$NM_STUB_LOG.loaded" ] && exit 1; echo 23; exit 0 ;; esac
 exit "${NM_STUB_RC:-0}"
 EOF
 printf '#!/bin/sh\necho "lkmloader $*" >> "$NM_STUB_LOG"\nexit 1\n' > "$M/lkm/lkmloader"
@@ -102,7 +102,7 @@ printf '#!/bin/sh\nexit 0\n' > "$S/rmmod"
 printf '#!/bin/sh\necho "log $*" >> "$NM_STUB_LOG"\n' > "$S/log"
 chmod +x "$M/bin/nm" "$M/lkm/lkmloader" "$S"/*
 export NM_STUB_LOG="$L" NOMOUNT_DATA="$D" PATH="$S:$PATH"
-reset_state() { rm -rf "$D" "$L" "$W/modules"; mkdir -p "$D"; : > "$L"; cp "$R/module/module.prop" "$M/module.prop"; unset NM_STUB_NO_DRIVER NM_STUB_RC; }
+reset_state() { rm -rf "$D" "$L" "$L.loaded" "$W/modules"; mkdir -p "$D"; : > "$L"; cp "$R/module/module.prop" "$M/module.prop"; unset NM_STUB_NO_DRIVER NM_STUB_RC; }
 run_script() { sh "$M/$1" > "$W/script.out" 2>&1; }
 
 reset_state
@@ -153,6 +153,78 @@ MODDIR=$M sh -c '. "$MODDIR/common.sh"; _lock_acquire "$NOMOUNT_DATA/.boot.lock"
 kill "$held" 2>/dev/null; wait "$held" 2>/dev/null
 if [ "$rc" -eq 1 ] && [ "$(cat "$D/.boot.lock/pid")" = "$held" ]; then ok "_lock_acquire: lock held by a live pid is respected"
 else bad "_lock_acquire live holder (rc=$rc)"; cat "$W/script.out"; fi
+
+# --- driver install (customize.sh) and the boot fallback; ksud stub: KSUD_OK=<path part that loads>, KSUD_EXISTS=1
+K="$W/ksud-bin"; mkdir -p "$K"
+cat > "$K/ksud" <<'EOF2'
+#!/bin/sh
+case $1 in
+    -h) echo "  insmod    Load a kernel module"; exit 0 ;;
+    insmod) echo "ksud insmod $2" >> "$NM_STUB_LOG"
+        if [ -n "${KSUD_OK:-}" ]; then case $2 in *"$KSUD_OK"*) touch "$NM_STUB_LOG.loaded"; exit 0 ;; esac; fi
+        [ -n "${KSUD_EXISTS:-}" ] && { echo "insmod: File exists"; exit 1; }
+        echo "insmod: Invalid module format"; exit 1 ;;
+esac
+exit 1
+EOF2
+printf '#!/bin/sh\n[ "$1" = -r ] && echo 6.6.50-android15-8-g0000000\n' > "$K/uname"
+chmod +x "$K/ksud" "$K/uname"
+inst() {
+    I="$W/inst"; O="$W/old"; rm -rf "$I" "$W/root-bin"; mkdir -p "$I/bin" "$I/lkm"
+    cp "$M/bin/nm" "$I/bin/nm-arm64"; cp "$M/lkm/lkmloader" "$I/bin/lkmloader-arm64"
+    echo NEW > "$I/lkm/nomount-android15-6.6.ko"
+    PATH="$K:$PATH" MODPATH="$I" ARCH=arm64 KSU=true NOMOUNT_OLD_MODPATH="$O" NOMOUNT_PROC_MODULES="$W/proc-modules" \
+        NOMOUNT_ROOT_BIN_DIR="$W/root-bin" sh -c 'ui_print() { echo "$*"; }; set_perm() { :; }; abort() { echo "ABORT: $*"; exit 1; }; . "$1"' \
+        sh "$R/module/customize.sh" > "$W/inst.out" 2>&1
+}
+old_module() { rm -rf "$W/old"; mkdir -p "$W/old/bin" "$W/old/lkm"; cp "$M/bin/nm" "$W/old/bin/nm"; echo "$1" > "$W/old/lkm/nomount.ko"; }
+
+reset_state; old_module OLD; echo 'nomount 65536 0 - Live 0x0' > "$W/proc-modules"; export KSUD_EXISTS=1
+inst; rc=$?; unset KSUD_EXISTS
+if [ "$rc" -eq 0 ] && [ "$(cat "$I/lkm/nomount.ko")" = NEW ] && [ "$(cat "$D/nomount-fallback.ko" 2>/dev/null)" = OLD ] &&
+   ! grep -q 'verified' "$W/inst.out"; then ok "customize.sh: running driver, File exists -> new ko staged unproven, running ko kept as fallback"
+else bad "customize.sh running driver + File exists (rc=$rc)"; cat "$W/inst.out"; fi
+
+reset_state; old_module OLD; echo 'nomount 65536 0 - Live 0x0' > "$W/proc-modules"
+inst; rc=$?
+if [ "$rc" -eq 0 ] && [ "$(cat "$I/lkm/nomount.ko")" = OLD ] && [ ! -e "$D/nomount-fallback.ko" ] && [ ! -e "$I/lkm/nomount-android15-6.6.ko" ]; then
+    ok "customize.sh: running driver, new ko rejected -> previous ko kept"
+else bad "customize.sh running driver + rejected ko (rc=$rc)"; cat "$W/inst.out"; fi
+
+reset_state; old_module OLD; : > "$W/proc-modules"; echo stale > "$D/nomount-fallback.ko"
+NM_STUB_NO_DRIVER=1 KSUD_OK=nomount-android15-6.6.ko inst; rc=$?
+if [ "$rc" -eq 0 ] && [ "$(cat "$I/lkm/nomount.ko")" = NEW ] && [ ! -e "$D/nomount-fallback.ko" ] && grep -q 'ready for injection' "$W/inst.out"; then
+    ok "customize.sh: no driver, new ko loads -> installed, stale fallback dropped"
+else bad "customize.sh fresh load (rc=$rc)"; cat "$W/inst.out"; fi
+
+reset_state; old_module OLD; : > "$W/proc-modules"
+NM_STUB_NO_DRIVER=1 KSUD_EXISTS=1 inst; rc=$?
+if [ "$rc" -ne 0 ] && grep -q 'ABORT' "$W/inst.out"; then ok "customize.sh: no working driver, File exists is not taken as loaded"
+else bad "customize.sh fresh + File exists (rc=$rc)"; cat "$W/inst.out"; fi
+
+reset_state; old_module OLD; : > "$W/proc-modules"
+inst; rc=$?
+if [ "$rc" -eq 0 ] && [ ! -e "$I/lkm" ] && [ ! -e "$D/nomount-fallback.ko" ] && grep -q 'built into the kernel' "$W/inst.out" &&
+   ! grep -q insmod "$L"; then ok "customize.sh: built-in driver path unchanged"
+else bad "customize.sh built-in (rc=$rc)"; cat "$W/inst.out" "$L"; fi
+
+# boot: new ko fails, fallback loads and becomes the module's ko; normal path never touches the fallback
+reset_state; echo NEW > "$M/lkm/nomount.ko"; echo OLD > "$D/nomount-fallback.ko"
+NM_STUB_NO_DRIVER=1 KSUD_OK=nomount-fallback.ko PATH="$K:$PATH" sh "$M/post-fs-data.sh" > "$W/script.out" 2>&1; rc=$?
+if [ "$rc" -eq 0 ] && [ ! -e "$D/disable" ] && grep -q "ksud insmod $D/nomount-fallback.ko" "$L" && [ "$(cat "$M/lkm/nomount.ko")" = OLD ]; then
+    ok "post-fs-data.sh: new ko fails -> fallback driver loaded and kept"
+else bad "post-fs-data.sh fallback (rc=$rc)"; cat "$W/script.out" "$L"; fi
+reset_state; old_module "$(cat "$M/lkm/nomount.ko")"; echo 'nomount 65536 0 - Live 0x0' > "$W/proc-modules"; export KSUD_EXISTS=1
+inst; rc=$?; unset KSUD_EXISTS
+[ "$rc" -eq 0 ] && [ "$(cat "$D/nomount-fallback.ko" 2>/dev/null)" = OLD ] && ok "customize.sh: install after a fallback boot keeps the working driver as fallback" ||
+    { bad "customize.sh install after fallback boot (rc=$rc)"; cat "$W/inst.out"; }
+reset_state; echo NEW > "$M/lkm/nomount.ko"; echo OLD > "$D/nomount-fallback.ko"
+NM_STUB_NO_DRIVER=1 KSUD_OK=nomount.ko PATH="$K:$PATH" sh "$M/post-fs-data.sh" > "$W/script.out" 2>&1; rc=$?
+if [ "$rc" -eq 0 ] && ! grep -q 'nomount-fallback.ko' "$L" && [ "$(cat "$M/lkm/nomount.ko")" = NEW ]; then ok "post-fs-data.sh: new ko loads -> fallback untouched"
+else bad "post-fs-data.sh normal path (rc=$rc)"; cat "$W/script.out" "$L"; fi
+grep -q '^rm -rf /data/adb/nomount/ ' "$R/module/uninstall.sh" && grep -q 'NOMOUNT_DATA/nomount-fallback.ko' "$R/module/common.sh" &&
+    ok "uninstall.sh removes the data dir that holds the fallback ko" || bad "fallback ko not under the uninstalled data dir"
+rm -f "$M/lkm/nomount.ko"
 
 # bootloop_check runs twice per boot (metamount.sh and post-fs-data.sh); here boot_id is unreadable
 # and the wall clock ticks between the calls

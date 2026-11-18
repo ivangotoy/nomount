@@ -123,9 +123,15 @@ ensure_lkm_loaded() {
 
     klog "Loading LKM..."
     if ! load_ko "$MODDIR/lkm/nomount.ko"; then
-        klogerr "LKM load failed."
-        _lock_release "$lockdir"
-        return 1
+        # kept by customize.sh when the new driver could not be proven at install time
+        if [ -f "$NOMOUNT_DATA/nomount-fallback.ko" ] && load_ko "$NOMOUNT_DATA/nomount-fallback.ko"; then
+            klogwarn "LKM load failed; loaded the fallback driver and made it the module's driver"
+            cp "$NOMOUNT_DATA/nomount-fallback.ko" "$MODDIR/lkm/nomount.ko"
+        else
+            klogerr "LKM load failed."
+            _lock_release "$lockdir"
+            return 1
+        fi
     fi
     klog "LKM loaded and initialized correctly."
     _lock_release "$lockdir"
