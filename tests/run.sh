@@ -107,6 +107,12 @@ run_script metamount.sh; rc=$?
 if [ "$rc" -eq 1 ] && [ "$(grep -c '^module load' "$L")" -eq 2 ] && [ ! -e "$D/.inject.lock" ]; then ok "metamount.sh: load failure keeps going, exits 1"
 else bad "metamount.sh load failure (rc=$rc)"; cat "$W/script.out" "$L"; fi
 
+reset_state; echo some-boot > "$D/.booting"; mkdir "$D/.boot.lock" "$D/.lkm.lock" "$D/.inject.lock"; touch "$D/dump_rules"
+run_script boot-completed.sh; rc=$?
+if [ "$rc" -eq 0 ] && [ ! -e "$D/.booting" ] && [ ! -e "$D/.boot.lock" ] && [ ! -e "$D/.lkm.lock" ] && [ ! -e "$D/.inject.lock" ] &&
+   grep -qx 'rule list' "$L" && grep -q '^log .*rules dump end' "$L"; then ok "boot-completed.sh: clears semaphore and locks, dumps rules when flagged"
+else bad "boot-completed.sh (rc=$rc)"; cat "$W/script.out" "$L"; fi
+
 # bootloop_check runs twice per boot (metamount.sh and post-fs-data.sh); here boot_id is unreadable
 # and the wall clock ticks between the calls
 printf '#!/bin/sh\nn=$(cat "$NM_DATE_FILE" 2>/dev/null || echo 1000); echo $((n + 1)) > "$NM_DATE_FILE"; echo "$n"\n' > "$S/date"
