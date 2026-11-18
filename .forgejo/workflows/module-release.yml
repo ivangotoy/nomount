@@ -1,0 +1,98 @@
+# Builds the module from main merged with upstream, releases it on this forge and
+# points the module's updateJson at this repo. Logic: .forgejo/module-ci.sh,
+# per-repo settings: .forgejo/module-ci.conf. nomount only: the kernel modules are
+# built first, one ddk image per KMI (.forgejo/nomount-lkm.sh), from the merged tree.
+name: module-release
+
+on:
+  workflow_dispatch:
+
+jobs:
+  release:
+    runs-on: kernelsu-ci
+    timeout-minutes: 170
+    steps:
+      - name: Merged tree for the kernel modules (no forge token)
+        env:
+          SERVER_URL: ${{ github.server_url }}
+          REPOSITORY: ${{ github.repository }}
+          BASE_SHA: ${{ github.sha }}
+          GIT_AUTHOR_NAME: Ivan Angelov
+          GIT_AUTHOR_EMAIL: ivangotoy@gmail.com
+          GIT_COMMITTER_NAME: Ivan Angelov
+          GIT_COMMITTER_EMAIL: ivangotoy@gmail.com
+        run: |
+          set -eu
+          git clone -q --branch main "$SERVER_URL/$REPOSITORY.git" pre
+          cd pre
+          git checkout -q -B main "$BASE_SHA"
+          url=$(sed -n 's/^UPSTREAM_URL=//p' .forgejo/module-ci.conf)
+          branch=$(sed -n 's/^UPSTREAM_BRANCH=//p' .forgejo/module-ci.conf)
+          git fetch -q "$url" "$branch"
+          git merge-base --is-ancestor FETCH_HEAD HEAD || git merge -q --no-ff --no-edit FETCH_HEAD
+          mkdir -p ../lkm
+          git rev-parse HEAD:kernel/src > ../lkm/tree
+      - name: Kernel modules android12-5.10
+        uses: docker://ghcr.io/ylarod/ddk-min:android12-5.10
+        with:
+          entrypoint: bash
+          args: ${{ github.workspace }}/pre/.forgejo/nomount-lkm.sh android12-5.10 ${{ github.workspace }}/pre/kernel/src ${{ github.workspace }}/lkm
+      - name: Kernel modules android13-5.10
+        uses: docker://ghcr.io/ylarod/ddk-min:android13-5.10
+        with:
+          entrypoint: bash
+          args: ${{ github.workspace }}/pre/.forgejo/nomount-lkm.sh android13-5.10 ${{ github.workspace }}/pre/kernel/src ${{ github.workspace }}/lkm
+      - name: Kernel modules android13-5.15
+        uses: docker://ghcr.io/ylarod/ddk-min:android13-5.15
+        with:
+          entrypoint: bash
+          args: ${{ github.workspace }}/pre/.forgejo/nomount-lkm.sh android13-5.15 ${{ github.workspace }}/pre/kernel/src ${{ github.workspace }}/lkm
+      - name: Kernel modules android14-5.15
+        uses: docker://ghcr.io/ylarod/ddk-min:android14-5.15
+        with:
+          entrypoint: bash
+          args: ${{ github.workspace }}/pre/.forgejo/nomount-lkm.sh android14-5.15 ${{ github.workspace }}/pre/kernel/src ${{ github.workspace }}/lkm
+      - name: Kernel modules android14-6.1
+        uses: docker://ghcr.io/ylarod/ddk-min:android14-6.1
+        with:
+          entrypoint: bash
+          args: ${{ github.workspace }}/pre/.forgejo/nomount-lkm.sh android14-6.1 ${{ github.workspace }}/pre/kernel/src ${{ github.workspace }}/lkm
+      - name: Kernel modules android15-6.6
+        uses: docker://ghcr.io/ylarod/ddk-min:android15-6.6
+        with:
+          entrypoint: bash
+          args: ${{ github.workspace }}/pre/.forgejo/nomount-lkm.sh android15-6.6 ${{ github.workspace }}/pre/kernel/src ${{ github.workspace }}/lkm
+      - name: Kernel modules android16-6.12
+        uses: docker://ghcr.io/ylarod/ddk-min:android16-6.12
+        with:
+          entrypoint: bash
+          args: ${{ github.workspace }}/pre/.forgejo/nomount-lkm.sh android16-6.12 ${{ github.workspace }}/pre/kernel/src ${{ github.workspace }}/lkm
+      - name: Kernel modules android17-6.18
+        uses: docker://ghcr.io/ylarod/ddk-min:android17-6.18
+        with:
+          entrypoint: bash
+          args: ${{ github.workspace }}/pre/.forgejo/nomount-lkm.sh android17-6.18 ${{ github.workspace }}/pre/kernel/src ${{ github.workspace }}/lkm
+      - name: Build (no forge token, unprivileged build user)
+        env:
+          SERVER_URL: ${{ github.server_url }}
+          REPOSITORY: ${{ github.repository }}
+          BASE_SHA: ${{ github.sha }}
+          SIGN_KEYSTORE_B64: ${{ secrets.SIGN_KEYSTORE_B64 }}
+          SIGN_KEY_ALIAS: ${{ secrets.SIGN_KEY_ALIAS }}
+          SIGN_STORE_PASSWORD: ${{ secrets.SIGN_STORE_PASSWORD }}
+          SIGN_KEY_PASSWORD: ${{ secrets.SIGN_KEY_PASSWORD }}
+        run: |
+          set -eu
+          git clone -q --branch main "$SERVER_URL/$REPOSITORY.git" src
+          bash src/.forgejo/module-ci.sh build src
+      - name: Release (script and config from the dispatched commit)
+        env:
+          RELEASE_TOKEN: ${{ secrets.MODULE_RELEASE_TOKEN }}
+          SERVER_URL: ${{ github.server_url }}
+          REPOSITORY: ${{ github.repository }}
+          BASE_SHA: ${{ github.sha }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          set -eu
+          curl -fsS -o module-ci.sh "$SERVER_URL/$REPOSITORY/raw/commit/$BASE_SHA/.forgejo/module-ci.sh"
+          bash module-ci.sh release src
