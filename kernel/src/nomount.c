@@ -2153,7 +2153,7 @@ static int nm_process_payload(unsigned long user_addr)
     struct nm_payload *payload;
     struct page *page;
     unsigned long pg_off = offset_in_page(user_addr);
-    char *buf_ptr, *buf_end;
+    char *buf_ptr, *buf_end, *req;
 
     BUILD_BUG_ON(NM_LEAF_HT_BITS + NM_LIST_SKIP_BITS > 32);
 
@@ -2176,8 +2176,10 @@ static int nm_process_payload(unsigned long user_addr)
         case NM_CMD_ADD_RULE: {
             unsigned int data_size = payload->data_size, offset = payload->arg1;
             if (data_size > sizeof(payload->buffer) || offset > data_size) { payload->status = -EINVAL; break; }
-            buf_ptr = payload->buffer + offset;
-            buf_end = payload->buffer + data_size;
+            /* one kernel copy: the caller can still write to its page while we parse */
+            if (!(req = kmemdup(payload->buffer, data_size, GFP_KERNEL))) { payload->status = -ENOMEM; break; }
+            buf_ptr = req + offset;
+            buf_end = req + data_size;
             mutex_lock(&nm_mutex);
             while (buf_ptr < buf_end) {
                 struct nm_rule_hdr h;
@@ -2198,15 +2200,18 @@ static int nm_process_payload(unsigned long user_addr)
                 buf_ptr += (size_t)(h.v_len + h.r_len);
             }
             mutex_unlock(&nm_mutex);
-            payload->arg1 = buf_ptr - payload->buffer;
+            payload->arg1 = buf_ptr - req;
+            kfree(req);
             break;
         }
 
         case NM_CMD_DEL_RULE: {
             unsigned int data_size = payload->data_size, offset = payload->arg1;
             if (data_size > sizeof(payload->buffer) || offset > data_size) { payload->status = -EINVAL; break; }
-            buf_ptr = payload->buffer + offset;
-            buf_end = payload->buffer + data_size;
+            /* one kernel copy: the caller can still write to its page while we parse */
+            if (!(req = kmemdup(payload->buffer, data_size, GFP_KERNEL))) { payload->status = -ENOMEM; break; }
+            buf_ptr = req + offset;
+            buf_end = req + data_size;
             mutex_lock(&nm_mutex);
             while (buf_ptr < buf_end) {
                 struct nm_del_hdr h;
@@ -2220,7 +2225,8 @@ static int nm_process_payload(unsigned long user_addr)
                 buf_ptr += h.v_len;
             }
             mutex_unlock(&nm_mutex);
-            payload->arg1 = buf_ptr - payload->buffer;
+            payload->arg1 = buf_ptr - req;
+            kfree(req);
             break;
         }
 

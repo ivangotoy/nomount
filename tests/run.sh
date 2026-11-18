@@ -76,6 +76,13 @@ missing=$(while read -r c; do grep -q "case $c:" "$K_SRC" || echo "$c"; done < "
 awk '/switch \(payload->cmd\)/,/^    kunmap\(page\);/' "$K_SRC" | grep -A1 'default:' | grep -q 'payload->status = -EINVAL' &&
     ok "driver: unknown command answers -EINVAL" || bad "driver: unknown command reports success"
 
+# --- driver: ADD_RULE/DEL_RULE parse one kernel copy of the request, never the caller's shared page
+for c in ADD_RULE DEL_RULE; do
+    awk -v c="case NM_CMD_$c:" 'index($0, c) { on = 1 } on { print } on && /^        }$/ { exit }' "$K_SRC" > "$W/case"
+    grep -q 'kmemdup(payload->buffer' "$W/case" && ! grep -q 'buf_ptr = payload->buffer' "$W/case" && grep -q 'kfree(req)' "$W/case" &&
+        ok "driver: $c parses a kernel copy of the request" || bad "driver: $c parses the shared user page"
+done
+
 # --- nm with the three zig command lines of build() in .forgejo/module-ci.conf
 if have zig; then
     export ZIG_GLOBAL_CACHE_DIR="${TMPDIR:-$W}/nm-zig-cache" ZIG_LOCAL_CACHE_DIR="${TMPDIR:-$W}/nm-zig-cache"
