@@ -48,14 +48,16 @@ load_ko() {
 _nm_boot_id() { cat /proc/sys/kernel/random/boot_id 2>/dev/null; }
 
 _lock_acquire() {
-    local lockdir="$1" timeout="$2" n=0
+    local lockdir="$1" timeout="$2" n=0 unowned=0
     local pid lock_boot cur_boot claimed
     cur_boot=$(_nm_boot_id)
     while ! mkdir "$lockdir" 2>/dev/null; do
         pid=$(cat "$lockdir/pid" 2>/dev/null)
         lock_boot=$(cat "$lockdir/boot_id" 2>/dev/null)
         claimed="$lockdir.claimed.$$"
-        if { [ -n "$cur_boot" ] && [ -n "$lock_boot" ] && [ "$lock_boot" != "$cur_boot" ]; } ||
+        if [ -z "$pid" ] && [ -z "$lock_boot" ]; then unowned=$((unowned + 1)); else unowned=0; fi
+        if [ "$unowned" -ge 3 ] ||
+           { [ -n "$cur_boot" ] && [ -n "$lock_boot" ] && [ "$lock_boot" != "$cur_boot" ]; } ||
            { [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; }; then
             if mv "$lockdir" "$claimed" 2>/dev/null; then
                 klogwarn "cleaning stale lock $lockdir"

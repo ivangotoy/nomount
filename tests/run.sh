@@ -113,6 +113,17 @@ if [ "$rc" -eq 0 ] && [ ! -e "$D/.booting" ] && [ ! -e "$D/.boot.lock" ] && [ ! 
    grep -qx 'rule list' "$L" && grep -q '^log .*rules dump end' "$L"; then ok "boot-completed.sh: clears semaphore and locks, dumps rules when flagged"
 else bad "boot-completed.sh (rc=$rc)"; cat "$W/script.out" "$L"; fi
 
+# a lock dir that never got its pid and boot_id (holder killed right after mkdir) must not cost the full timeout
+reset_state; mkdir "$D/.boot.lock"
+MODDIR=$M sh -c '. "$MODDIR/common.sh"; _lock_acquire "$NOMOUNT_DATA/.boot.lock" 5' > "$W/script.out" 2>&1; rc=$?
+if [ "$rc" -eq 0 ] && [ "$(cat "$D/.boot.lock/pid" 2>/dev/null)" != "" ]; then ok "_lock_acquire: lock dir without pid and boot_id is taken over"
+else bad "_lock_acquire empty lock dir (rc=$rc)"; cat "$W/script.out"; fi
+reset_state; mkdir "$D/.boot.lock"; sleep 600 & held=$!; echo "$held" > "$D/.boot.lock/pid"
+MODDIR=$M sh -c '. "$MODDIR/common.sh"; _lock_acquire "$NOMOUNT_DATA/.boot.lock" 3' > "$W/script.out" 2>&1; rc=$?
+kill "$held" 2>/dev/null; wait "$held" 2>/dev/null
+if [ "$rc" -eq 1 ] && [ "$(cat "$D/.boot.lock/pid")" = "$held" ]; then ok "_lock_acquire: lock held by a live pid is respected"
+else bad "_lock_acquire live holder (rc=$rc)"; cat "$W/script.out"; fi
+
 # bootloop_check runs twice per boot (metamount.sh and post-fs-data.sh); here boot_id is unreadable
 # and the wall clock ticks between the calls
 printf '#!/bin/sh\nn=$(cat "$NM_DATE_FILE" 2>/dev/null || echo 1000); echo $((n + 1)) > "$NM_DATE_FILE"; echo "$n"\n' > "$S/date"
