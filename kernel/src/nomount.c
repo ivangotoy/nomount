@@ -2324,6 +2324,10 @@ static int nm_process_payload(unsigned long user_addr)
             payload->arg1 = arr && start_idx < arr->count ? start_idx : ~0U;
             break;
         }
+
+        default:
+            payload->status = -EINVAL;
+            break;
     }
 
     kunmap(page);

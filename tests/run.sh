@@ -68,6 +68,14 @@ for f in "$R/.github/workflows/build.yml" "$R/.forgejo/module-ci.conf"; do
 done
 grep -q 'mv "$MODPATH/bin/lkmloader-$ARCH_BIN"' "$R/module/customize.sh" && ok "customize.sh takes lkmloader-\$ARCH_BIN" || bad "customize.sh lkmloader name changed"
 
+# --- driver commands: every command nm sends has a case, anything else is -EINVAL
+K_SRC="$R/kernel/src/nomount.c"
+grep -o 'NM_CMD_[A-Z_]*' "$R/userspace/src/nm.c" "$R/userspace/src/nm.h" | sed 's/.*://' | grep -v '^NM_CMD_UNSPEC$' | sort -u > "$W/sent"
+missing=$(while read -r c; do grep -q "case $c:" "$K_SRC" || echo "$c"; done < "$W/sent")
+[ -s "$W/sent" ] && [ -z "$missing" ] && ok "driver handles all $(wc -l < "$W/sent") commands nm sends" || bad "driver lacks cases: $missing"
+awk '/switch \(payload->cmd\)/,/^    kunmap\(page\);/' "$K_SRC" | grep -A1 'default:' | grep -q 'payload->status = -EINVAL' &&
+    ok "driver: unknown command answers -EINVAL" || bad "driver: unknown command reports success"
+
 # --- nm with the three zig command lines of build() in .forgejo/module-ci.conf
 if have zig; then
     export ZIG_GLOBAL_CACHE_DIR="${TMPDIR:-$W}/nm-zig-cache" ZIG_LOCAL_CACHE_DIR="${TMPDIR:-$W}/nm-zig-cache"
