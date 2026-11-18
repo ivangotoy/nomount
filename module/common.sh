@@ -87,6 +87,7 @@ bootloop_check() {
 
     local current prev
     current=$(_nm_boot_id)
+    [ -z "$current" ] && current=$(sed -n 's/^btime /btime-/p' /proc/stat 2>/dev/null)
     [ -z "$current" ] && current="fallback-$(date +%s)"
 
     if [ -f "$BOOT_SEMAPHORE" ] && [ -s "$BOOT_SEMAPHORE" ]; then

@@ -107,5 +107,18 @@ run_script metamount.sh; rc=$?
 if [ "$rc" -eq 1 ] && [ "$(grep -c '^module load' "$L")" -eq 2 ] && [ ! -e "$D/.inject.lock" ]; then ok "metamount.sh: load failure keeps going, exits 1"
 else bad "metamount.sh load failure (rc=$rc)"; cat "$W/script.out" "$L"; fi
 
+# bootloop_check runs twice per boot (metamount.sh and post-fs-data.sh); here boot_id is unreadable
+# and the wall clock ticks between the calls
+printf '#!/bin/sh\nn=$(cat "$NM_DATE_FILE" 2>/dev/null || echo 1000); echo $((n + 1)) > "$NM_DATE_FILE"; echo "$n"\n' > "$S/date"
+chmod +x "$S/date"
+no_boot_id_check() { NM_DATE_FILE="$W/date.n" sh -c 'MODDIR=$1; . "$MODDIR/common.sh"; _nm_boot_id() { :; }; bootloop_check && bootloop_check' sh "$M" > "$W/script.out" 2>&1; }
+reset_state; no_boot_id_check; rc=$?
+if [ "$rc" -eq 0 ] && [ ! -e "$D/disable" ] && [ -s "$D/.booting" ]; then ok "bootloop_check: two calls in one boot without boot_id"
+else bad "bootloop_check without boot_id, same boot (rc=$rc)"; cat "$W/script.out"; fi
+reset_state; echo other-boot > "$D/.booting"; no_boot_id_check; rc=$?
+if [ "$rc" -eq 1 ] && [ -e "$D/disable" ]; then ok "bootloop_check: unfinished previous boot detected without boot_id"
+else bad "bootloop_check without boot_id, previous boot (rc=$rc)"; cat "$W/script.out"; fi
+rm -f "$S/date"
+
 echo "summary: $pass passed, $fail failed, $skip skipped"
 [ "$fail" -eq 0 ]
