@@ -120,5 +120,28 @@ if [ "$rc" -eq 1 ] && [ -e "$D/disable" ]; then ok "bootloop_check: unfinished p
 else bad "bootloop_check without boot_id, previous boot (rc=$rc)"; cat "$W/script.out"; fi
 rm -f "$S/date"
 
+# --- nm CLI against a fake driver (tests/nm_fake_driver.c logs every request)
+CC=$(command -v cc || command -v gcc || command -v clang || true)
+if [ -n "$CC" ] && "$CC" -std=gnu11 -w -Dsyscall=nm_test_syscall -Dmain=nm_main -c "$R/userspace/src/nm.c" -o "$W/nm.o" 2>"$W/cc.out" &&
+   "$CC" -std=gnu11 -w "$R/tests/nm_fake_driver.c" "$W/nm.o" -o "$W/nm-fake" 2>>"$W/cc.out"; then
+    ok "nm.c builds against the fake driver"
+    nm_fake() { : > "$W/drv.log"; NM_FAKE_LOG="$W/drv.log" "$W/nm-fake" "$@" > "$W/nm.out" 2>&1; }
+    nm_fake clear; rc=$?
+    [ "$rc" -eq 0 ] && [ "$(cat "$W/drv.log")" = "cmd=6 uid=0 arg1=0 size=0" ] && ok "nm clear: clears all" || bad "nm clear (rc=$rc): $(cat "$W/drv.log")"
+    nm_fake clear all; rc=$?
+    [ "$rc" -eq 0 ] && grep -q '^cmd=6 ' "$W/drv.log" && ok "nm clear all: clears all" || bad "nm clear all (rc=$rc): $(cat "$W/drv.log")"
+    nm_fake clear rules; rc=$?
+    [ "$rc" -eq 0 ] && grep -q '^cmd=7 ' "$W/drv.log" && ok "nm clear rules: clears rules" || bad "nm clear rules (rc=$rc): $(cat "$W/drv.log")"
+    nm_fake clear uid; rc=$?
+    [ "$rc" -eq 0 ] && grep -q '^cmd=8 ' "$W/drv.log" && ok "nm clear uid: clears uids" || bad "nm clear uid (rc=$rc): $(cat "$W/drv.log")"
+    for word in uids rule everything; do
+        nm_fake clear "$word"; rc=$?
+        [ "$rc" -eq 1 ] && [ ! -s "$W/drv.log" ] && grep -q 'Usage' "$W/nm.out" && ok "nm clear $word: rejected, nothing sent" ||
+            bad "nm clear $word (rc=$rc) sent: $(cat "$W/drv.log")"
+    done
+else
+    if [ -n "$CC" ]; then bad "nm.c fake-driver build"; cat "$W/cc.out"; else skp "nm CLI fake-driver tests (no C compiler)"; fi
+fi
+
 echo "summary: $pass passed, $fail failed, $skip skipped"
 [ "$fail" -eq 0 ]

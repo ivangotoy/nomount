@@ -299,7 +299,7 @@ static noinline void parse_arguments(long argc, char **argv, struct nm_args *par
     } else if (strcmp(c1, "clear") == 0) {
         if (argc >= 3 && strcmp(argv[2], "rules") == 0) parsed_args->action = ACTION_RULE_CLEAR;
         else if (argc >= 3 && strcmp(argv[2], "uid") == 0) parsed_args->action = ACTION_UID_CLEAR;
-        else parsed_args->action = ACTION_CLEAR_ALL;
+        else if (argc < 3 || strcmp(argv[2], "all") == 0) parsed_args->action = ACTION_CLEAR_ALL;
         parsed_args->data_start_idx = (argc >= 3) ? 3 : 2;
     } else if (strcmp(c1, "module") == 0 && argc >= 3) {
         const char *c2 = argv[2];
