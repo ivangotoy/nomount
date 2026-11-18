@@ -200,39 +200,14 @@ static void nm_shutdown_release(void);
 static int nm_del_rule_locked(const char *path, u16 len, unsigned int uid, unsigned int uid_end, unsigned int deny_start, unsigned int deny_end);
 static void nm_clear_state(int clear_flags);
 
-/* =====================================================================
- * NoMount VFS Offset Protocol
- * =====================================================================
- * 64-bit layout: [ 16-bit 'nm' ][ 16-bit FRAG ][ 32-bit ID ]
- * 32-bit layout: [ 16-bit 'nm' ][ 16-bit ID ]
- */
-#define NM_SIG_16 0x6E6DULL /* "nm" in hex */
-static inline bool nm_is_virtual_pos(loff_t pos) {
+/* readdir cursors: see nomount_readdir.h; 32-bit callers get 32-bit positions */
+#include "nomount_readdir.h"
+static inline bool nm_rd_compat(void) {
 #ifdef CONFIG_COMPAT
-    if (in_compat_syscall()) return (pos & 0xFFFF0000ULL) == (NM_SIG_16 << 16);
+    return in_compat_syscall();
+#else
+    return false;
 #endif
-    return (pos & 0xFFFF000000000000ULL) == (NM_SIG_16 << 48);
-}
-
-static inline loff_t nm_pack_pos(u32 id, u32 frag) {
-#ifdef CONFIG_COMPAT
-    if (in_compat_syscall()) return (NM_SIG_16 << 16) | (id & 0xFFFF);
-#endif
-    return ((loff_t)NM_SIG_16 << 48) | ((loff_t)(frag & 0xFFFF) << 32) | id;
-}
-
-static inline u32 nm_unpack_frag(loff_t pos) {
-#ifdef CONFIG_COMPAT
-    if (in_compat_syscall()) return 0;
-#endif
-    return (u32)((pos >> 32) & 0xFFFF);
-}
-
-static inline u32 nm_unpack_pos(loff_t pos) {
-#ifdef CONFIG_COMPAT
-    if (in_compat_syscall()) return pos & 0xFFFF;
-#endif
-    return (u32)pos;
 }
 
 /* --- UIDs Array RCU Management --- */

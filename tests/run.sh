@@ -305,5 +305,11 @@ else
     if [ -n "$CC" ]; then bad "nm.c fake-driver build"; cat "$W/cc.out"; else skp "nm CLI fake-driver tests (no C compiler)"; fi
 fi
 
+# --- driver readdir cursors: kernel/src/nomount_readdir.h in a host model of a hijacked directory stream
+if [ -n "$CC" ] && "$CC" -std=gnu11 -O2 -Wall -Wextra -Werror "$R/tests/readdir_model.c" -o "$W/readdir-model" 2>"$W/cc.out"; then
+    check "readdir model: every real and virtual entry once, telldir/seekdir, rewind" "$W/readdir-model"
+elif [ -n "$CC" ]; then bad "readdir model build"; cat "$W/cc.out"
+else skp "readdir model (no C compiler)"; fi
+
 echo "summary: $pass passed, $fail failed, $skip skipped"
 [ "$fail" -eq 0 ]

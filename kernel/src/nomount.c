@@ -204,13 +204,68 @@ static inline void nm_destroy_hijacked_inode(struct inode *inode)
     kfree_rcu(ops, rcu);
 }
 
+/* per open directory stream cursor state, keyed by the file: no field of a real dir's file is ours */
+struct nm_rd_entry {
+    struct hlist_node node;
+    const struct file *file;
+    struct nm_rd_state st;
+    struct rcu_head rcu;
+};
+static DEFINE_HASHTABLE(nm_rd_ht, 6);
+static DEFINE_SPINLOCK(nm_rd_lock);
+static atomic_t nm_rd_entries = ATOMIC_INIT(0);
+
+/* lookup is RCU; create and forget run for the file's own calls, which f_pos_lock serializes */
+static struct nm_rd_state *nm_rd_get(const struct file *file, bool create)
+{
+    struct nm_rd_entry *e;
+
+    if (atomic_read(&nm_rd_entries)) {
+        rcu_read_lock();
+        hash_for_each_possible_rcu(nm_rd_ht, e, node, (unsigned long)file) {
+            if (e->file == file) {
+                rcu_read_unlock();
+                return &e->st;
+            }
+        }
+        rcu_read_unlock();
+    }
+    if (!create || !(e = kzalloc(sizeof(*e), GFP_KERNEL))) return NULL;
+    e->file = file;
+    spin_lock(&nm_rd_lock);
+    hash_add_rcu(nm_rd_ht, &e->node, (unsigned long)file);
+    atomic_inc(&nm_rd_entries);
+    spin_unlock(&nm_rd_lock);
+    return &e->st;
+}
+
+static void nm_rd_forget(const struct file *file)
+{
+    struct nm_rd_entry *e, *found = NULL;
+
+    if (!atomic_read(&nm_rd_entries)) return;
+    spin_lock(&nm_rd_lock);
+    hash_for_each_possible(nm_rd_ht, e, node, (unsigned long)file) {
+        if (e->file == file) {
+            hash_del_rcu(&e->node);
+            atomic_dec(&nm_rd_entries);
+            found = e;
+            break;
+        }
+    }
+    spin_unlock(&nm_rd_lock);
+    if (found) kfree_rcu(found, rcu);
+}
+
 struct nm_proxy_ctx {
     struct dir_context ctx;
     struct dir_context *orig_ctx;
     struct nm_dir_node *dir_node;
+    struct nm_rd_state *rd;
     uid_t fsuid;
     bool emitted;
     bool native_view;
+    bool compat;
 };
 
 static bool nm_rule_needs_readdir(struct nm_leaf *leaf, struct nm_rule *rule)
@@ -234,6 +289,7 @@ static NM_ACTOR_RET nm_actor_proxy(struct dir_context *ctx, const char *name, in
         }
     }
 
+    nm_rd_note_real(proxy->rd, offset, proxy->compat);
     orig_ctx->pos = proxy->ctx.pos;
     ret = orig_ctx->actor(orig_ctx, name, namelen, offset, ino, d_type);
     proxy->ctx.pos = orig_ctx->pos;
@@ -256,14 +312,15 @@ static inline unsigned char nm_mode_to_dtype(umode_t mode)
 	}
 }
 
-static inline void nm_emit_virtual_children(struct dir_context *ctx, struct nm_dir_node *dir_node, uid_t fsuid, bool native_view)
+static inline void nm_emit_virtual_children(struct dir_context *ctx, struct nm_dir_node *dir_node, uid_t fsuid, bool native_view,
+                                            struct nm_rd_state *rd, bool compat)
 {
 	if (!dir_node) return;
 
 	u32 index = 0;
-	if (nm_is_virtual_pos(ctx->pos)) {
-		index = nm_unpack_pos(ctx->pos);
-		u32 frag = nm_unpack_frag(ctx->pos);
+	if (nm_rd_is_virtual(rd, ctx->pos, compat)) {
+		index = nm_rd_unpack_id(ctx->pos, compat);
+		u32 frag = nm_rd_unpack_frag(ctx->pos, compat);
 		if (frag) {
 			rcu_guard();
 			struct nm_child_array *array = rcu_dereference(dir_node->children);
@@ -306,9 +363,9 @@ static inline void nm_emit_virtual_children(struct dir_context *ctx, struct nm_d
 		rcu_read_unlock();
 		if (!has_more) break;
 
-		ctx->pos = nm_pack_pos(id, cur_frag);
+		ctx->pos = nm_rd_pack(rd, id, cur_frag, compat);
 		if (do_emit && !dir_emit(ctx, name_buf, name_len, v_ino, d_type)) break;
-		ctx->pos = nm_pack_pos(id + 1, next_frag);
+		ctx->pos = nm_rd_pack(rd, id + 1, next_frag, compat);
 	}
 }
 
@@ -475,31 +532,37 @@ static int nm_iterate_view(struct file *file, struct dir_context *ctx, const str
 {
     struct file *real_file = native_view ? file : file->private_data;
     uid_t fsuid = current_fsuid().val;
-    bool uid_blocked = nm_is_uid_blocked(fsuid);
+    bool uid_blocked = nm_is_uid_blocked(fsuid), compat = nm_rd_compat();
+    struct nm_rd_state *rd = nm_rd_get(file, false);
     int res = 0;
 
-    if (unlikely(nm_is_virtual_pos(ctx->pos)))
+    if (unlikely(nm_rd_is_virtual(rd, ctx->pos, compat)))
         goto emit_virtual;
     if ((opaque && !uid_blocked) || !real_file) {
+        if (!rd && !(rd = nm_rd_get(file, true))) return -ENOMEM;
         if (ctx->pos < 2 && !dir_emit_dots(file, ctx)) return 0;
-        ctx->pos = nm_pack_pos(0, 0);
+        if (!nm_rd_enter_virtual(rd)) return 0;
+        ctx->pos = nm_rd_pack(rd, 0, 0, compat);
         goto emit_virtual;
     }
     if (unlikely(uid_blocked || !dir_node))
         return nm_call_iterate(real_file, ctx, fop);
+    if (!rd && !(rd = nm_rd_get(file, true))) return -ENOMEM;
 
     struct nm_proxy_ctx proxy_ctx = {
         .ctx.actor = nm_actor_proxy, .ctx.pos = ctx->pos, .orig_ctx = ctx,
-        .dir_node = dir_node, .fsuid = fsuid, .native_view = native_view,
+        .dir_node = dir_node, .rd = rd, .fsuid = fsuid, .native_view = native_view, .compat = compat,
     };
     res = nm_call_iterate(real_file, &proxy_ctx.ctx, fop);
     ctx->pos = proxy_ctx.ctx.pos;
+    nm_rd_note_real(rd, ctx->pos, compat);
     if (res < 0 || proxy_ctx.emitted) return res;
-    ctx->pos = nm_pack_pos(0, 0);
+    if (!nm_rd_enter_virtual(rd)) return res;
+    ctx->pos = nm_rd_pack(rd, 0, 0, compat);
 
 emit_virtual:
     if (likely(!uid_blocked))
-        nm_emit_virtual_children(ctx, dir_node, fsuid, native_view);
+        nm_emit_virtual_children(ctx, dir_node, fsuid, native_view, rd, compat);
     return res;
 }
 
@@ -514,7 +577,7 @@ static int nm_hijacked_iterate_dir(struct file *file, struct dir_context *ctx)
     orig_fop = rcu_dereference(file->f_op);
     if ((nm_fop = nm_get_nm_fop(orig_fop))) {
         orig_fop = nm_fop->orig_fop;
-        if ((d = rcu_dereference(nm_fop->dir_node)) && rcu_access_pointer(d->children) && (READ_ONCE(d->readdir_count) || nm_is_virtual_pos(ctx->pos)) && atomic_inc_not_zero(&d->refs))
+        if ((d = rcu_dereference(nm_fop->dir_node)) && rcu_access_pointer(d->children) && (READ_ONCE(d->readdir_count) || nm_rd_is_virtual(nm_rd_get(file, false), ctx->pos, nm_rd_compat())) && atomic_inc_not_zero(&d->refs))
             dir_node = d;
     }
     rcu_read_unlock();
@@ -692,6 +755,7 @@ static int nm_open(struct inode *inode, struct file *file)
 
 static int nm_release(struct inode *inode, struct file *file)
 {
+    nm_rd_forget(file);
     struct nm_inode_info *info = READ_ONCE(inode->i_private);
     struct file *real_file = file->private_data;
     if (real_file && info && real_file != READ_ONCE(info->r_file)) fput(real_file);
@@ -1291,6 +1355,24 @@ static int nm_hijack_superblock(struct super_block *sb, bool with_xattr)
     return 0;
 }
 
+/* the filesystem's llseek may bound offsets below the virtual cursors (s_maxbytes) */
+static loff_t nm_hijacked_dir_llseek(struct file *file, loff_t offset, int whence)
+{
+    struct nm_dir_ops *ops = nm_get_nm_fop(file->f_op);
+
+    if (whence == SEEK_SET && nm_rd_is_virtual(nm_rd_get(file, false), offset, nm_rd_compat()))
+        return vfs_setpos(file, offset, OFFSET_MAX);
+    return ops->orig_fop->llseek(file, offset, whence);
+}
+
+static int nm_hijacked_dir_release(struct inode *inode, struct file *file)
+{
+    struct nm_dir_ops *ops = nm_get_nm_fop(file->f_op);
+
+    nm_rd_forget(file);
+    return ops && ops->orig_fop && ops->orig_fop->release ? ops->orig_fop->release(inode, file) : 0;
+}
+
 static inline int nm_hijack_dir_ops(struct nm_dir_node *dir_node, struct inode *inode)
 {
     const struct inode_operations *iop = smp_load_acquire(&inode->i_op);
@@ -1328,6 +1410,10 @@ static inline int nm_hijack_dir_ops(struct nm_dir_node *dir_node, struct inode *
     if (fop) {
         ops->fake_fop = *fop;
         ops->fake_fop.owner = THIS_MODULE;
+        if (iterate) {
+            ops->fake_fop.release = nm_hijacked_dir_release;
+            if (fop->llseek) ops->fake_fop.llseek = nm_hijacked_dir_llseek;
+        }
         if (fop->iterate_shared) ops->fake_fop.iterate_shared = nm_hijacked_iterate_dir;
 #if LINUX_VERSION_CODE < KERNEL_VERSION(6, 6, 0)
         if (fop->iterate) ops->fake_fop.iterate = nm_hijacked_iterate_dir;
