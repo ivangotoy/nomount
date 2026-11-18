@@ -341,6 +341,7 @@ static noinline void write_strn(int fd, const char *s, size_t len) {
 }
 #define print_strn(s, len) write_strn(STDOUT_FILENO, (s), (len))
 #define print_literal(s) print_strn((s), sizeof(s) - 1)
+#define print_err_literal(s) write_strn(STDERR_FILENO, (s), sizeof(s) - 1)
 
 struct nm_output {
     char *buffer;
@@ -432,10 +433,10 @@ static noinline int resolve_path(char *base, char *end, const char *cwd, const c
 }
 
 static noinline int nm_invalid_path(const char *path, int error) {
-    print_literal("nm: invalid path: ");
-    print_strn(path, strlen(path));
-    if (error == -ENAMETOOLONG) print_literal(" (name too long)\n");
-    else print_literal("\n");
+    print_err_literal("nm: invalid path: ");
+    write_strn(STDERR_FILENO, path, strlen(path));
+    if (error == -ENAMETOOLONG) print_err_literal(" (name too long)\n");
+    else print_err_literal("\n");
     return error;
 }
 

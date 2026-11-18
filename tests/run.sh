@@ -156,6 +156,25 @@ if [ -n "$CC" ] && "$CC" -std=gnu11 -w -Dsyscall=nm_test_syscall -Dmain=nm_main 
         [ "$rc" -eq 1 ] && [ ! -s "$W/drv.log" ] && grep -q 'Usage' "$W/nm.out" && ok "nm clear $word: rejected, nothing sent" ||
             bad "nm clear $word (rc=$rc) sent: $(cat "$W/drv.log")"
     done
+    nm_split() { : > "$W/drv.log"; NM_FAKE_LOG="$W/drv.log" "$W/nm-fake" "$@" > "$W/nm.stdout" 2> "$W/nm.stderr"; }
+    nm_split rule add --uid abc /a /b; rc=$?
+    [ "$rc" -eq 1 ] && [ ! -s "$W/nm.stdout" ] && grep -q 'invalid --uid' "$W/nm.stderr" && ok "nm: argument errors go to stderr" ||
+        bad "nm argument error (rc=$rc) stdout: $(cat "$W/nm.stdout") stderr: $(cat "$W/nm.stderr")"
+    nm_split rule add "/$(printf '%0300d' 0)" /b; rc=$?
+    [ "$rc" -ne 0 ] && [ ! -s "$W/nm.stdout" ] && grep -q 'invalid path' "$W/nm.stderr" && ok "nm: invalid path goes to stderr" ||
+        bad "nm invalid path (rc=$rc) stdout: $(cat "$W/nm.stdout")"
+    for a in add del; do
+        nm_split rule $a; rc=$?
+        [ "$rc" -eq 1 ] && [ ! -s "$W/drv.log" ] && [ -s "$W/nm.stderr" ] && ok "nm rule $a without paths: message, exit 1" ||
+            bad "nm rule $a without paths (rc=$rc) stderr: $(cat "$W/nm.stderr")"
+    done
+    nm_split uid block_isolated maybe; rc=$?
+    [ "$rc" -eq 1 ] && [ ! -s "$W/drv.log" ] && grep -q 'block_isolated' "$W/nm.stderr" && ok "nm uid block_isolated <bad>: message, exit 1" ||
+        bad "nm uid block_isolated bad (rc=$rc) stderr: $(cat "$W/nm.stderr")"
+    nm_split uid block_isolated on; rc=$?
+    [ "$rc" -eq 0 ] && grep -q '^cmd=11 uid=0 arg1=1 ' "$W/drv.log" && ok "nm uid block_isolated on: sent" || bad "nm uid block_isolated on (rc=$rc)"
+    nm_split version; rc=$?
+    [ "$rc" -eq 0 ] && [ "$(cat "$W/nm.stdout")" = 23 ] && [ ! -s "$W/nm.stderr" ] && ok "nm version: driver version on stdout" || bad "nm version (rc=$rc)"
 else
     if [ -n "$CC" ]; then bad "nm.c fake-driver build"; cat "$W/cc.out"; else skp "nm CLI fake-driver tests (no C compiler)"; fi
 fi

@@ -23,7 +23,7 @@ int main(int argc, char **argv) {
             else if (strcmp(argv[i], "--uid") == 0) {
                 unsigned int uid = 0;
                 if (i + 1 >= argc || nm_parse_uid(argv[++i], &uid)) {
-                    print_literal("nm: invalid --uid value\n");
+                    print_err_literal("nm: invalid --uid value\n");
                     goto do_exit;
                 }
                 args.target_uid = uid;
@@ -35,13 +35,13 @@ int main(int argc, char **argv) {
                     args.target_uid = 0;
                     args.target_uid_end = 0xFFFFFFFFU;
                 } else if (parse_uid_range(s, &args.target_uid, &args.target_uid_end)) {
-                    print_literal("nm: invalid --uid-range value\n");
+                    print_err_literal("nm: invalid --uid-range value\n");
                     goto do_exit;
                 }
             }
             else if (strcmp(argv[i], "--uid-excluded") == 0) {
                 if (i + 1 >= argc || parse_uid_range(argv[++i], &args.deny_start, &args.deny_end)) {
-                    print_literal("nm: invalid --uid-excluded value\n");
+                    print_err_literal("nm: invalid --uid-excluded value\n");
                     goto do_exit;
                 }
             }
@@ -56,22 +56,22 @@ int main(int argc, char **argv) {
         case ACTION_RULE_ADD:
         case ACTION_RULE_DEL: {
             if (args.action == ACTION_RULE_ADD && args.is_whiteout && args.is_opaque) {
-                print_literal("nm: --whiteout and --opaque flags are mutually exclusive\n");
+                print_err_literal("nm: --whiteout and --opaque flags are mutually exclusive\n");
                 goto do_exit;
             }
             if (args.deny_start || args.deny_end) {
                 if (!args.deny_start || !args.deny_end) {
-                    print_literal("nm: --uid-excluded requires a valid range\n");
+                    print_err_literal("nm: --uid-excluded requires a valid range\n");
                     goto do_exit;
                 }
                 if (args.deny_start < args.target_uid || args.deny_end > args.target_uid_end) {
-                    print_literal("nm: --uid-excluded must be inside --uid / --uid-range\n");
+                    print_err_literal("nm: --uid-excluded must be inside --uid / --uid-range\n");
                     goto do_exit;
                 }
             }
             int step = (args.action == ACTION_RULE_ADD && !args.is_whiteout) ? 2 : 1;
-            if (!p_count) { exit_code = 0; goto do_exit; }
-            if (p_count % step) { print_literal("nm: paths must be supplied in <vpath> <rpath> pairs\n"); goto do_exit; }
+            if (!p_count) { print_err_literal("nm: no paths given\n"); goto do_exit; }
+            if (p_count % step) { print_err_literal("nm: paths must be supplied in <vpath> <rpath> pairs\n"); goto do_exit; }
 
             const char *cwd = "/";
             if (needs_cwd && !(cwd = getcwd(workspace.cwd, PATH_MAX)))
@@ -93,11 +93,11 @@ int main(int argc, char **argv) {
 
         case ACTION_UID_ADD:
         case ACTION_UID_DEL: {
-            if (p_count < 1) goto do_exit;
+            if (p_count < 1) { print_err_literal("nm: no uid given\n"); goto do_exit; }
             for (int i = 0; i < p_count; i++) {
                 unsigned int uid = 0;
                 if (nm_parse_uid(argv[i], &uid)) {
-                    print_literal("nm: invalid uid value\n");
+                    print_err_literal("nm: invalid uid value\n");
                     exit_code = 1;
                     goto do_exit;
                 }
@@ -126,6 +126,7 @@ int main(int argc, char **argv) {
                 } else if (strcmp(argv[0], "off") == 0 || strcmp(argv[0], "0") == 0) {
                     payload->arg1 = 0;
                 } else {
+                    print_err_literal("nm: block_isolated takes on/1 or off/0\n");
                     goto do_exit;
                 }
                 exit_code = (nm_send_payload(payload) < 0);
