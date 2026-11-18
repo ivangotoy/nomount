@@ -40,6 +40,15 @@ else skp "node --check module/webroot/index.js (node missing)"; fi
 if have node; then check "WebUI shell commands quote or number-check every value" node "$R/tests/webui_exec.js" "$R/module/webroot/index.js"
 else skp "WebUI shell command check (node missing)"; fi
 
+# --- lkmloader: make names the arm64 build lkmloader-aarch64, customize.sh moves bin/lkmloader-$ARCH_BIN (arm64)
+for f in "$R/.github/workflows/build.yml" "$R/.forgejo/module-ci.conf"; do
+    if grep -q 'make TARGET=aarch64' "$f"; then
+        grep -q 'mv .*lkmloader-aarch64.* .*lkmloader-arm64' "$f" && ok "${f#"$R"/}: arm64 lkmloader renamed for customize.sh" ||
+            bad "${f#"$R"/}: lkmloader-aarch64 shipped, customize.sh expects lkmloader-arm64"
+    fi
+done
+grep -q 'mv "$MODPATH/bin/lkmloader-$ARCH_BIN"' "$R/module/customize.sh" && ok "customize.sh takes lkmloader-\$ARCH_BIN" || bad "customize.sh lkmloader name changed"
+
 # --- nm with the three zig command lines of build() in .forgejo/module-ci.conf
 if have zig; then
     export ZIG_GLOBAL_CACHE_DIR="${TMPDIR:-$W}/nm-zig-cache" ZIG_LOCAL_CACHE_DIR="${TMPDIR:-$W}/nm-zig-cache"

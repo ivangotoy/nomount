@@ -74,6 +74,7 @@ jobs:
           ../sstrip -z lkmloader-*
           wc -c lkmloader-*
           file lkmloader-*
+          mv lkmloader-aarch64 lkmloader-arm64
           mv lkmloader-* ../module/bin/
 
       - name: Process versioning and metadata
