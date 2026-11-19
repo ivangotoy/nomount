@@ -6,9 +6,9 @@ REPO_URL="https://github.com/maxsteeel/nomount"
 REPO_DIR="$GKI_ROOT/NoMount"
 
 display_usage() {
-    echo "Usage: $0 [--cleanup | <commit-or-tag>]"
+    echo "Usage: $0 [--cleanup | <branch-commit-or-tag>]"
     echo "  --cleanup:             Cleans up previous modifications made by the script (doesn't revert in-kernel patches)."
-    echo "  <commit-or-tag>:       Sets up or updates NoMount to specified tag or commit."
+    echo "  <branch-commit-or-tag>: Sets up or updates NoMount to the specified branch head, tag or commit."
     echo "  -h, --help:            Displays this usage information."
     echo "  (no args):             Sets up or updates NoMount to the head of the dev branch (master if there is no dev)."
 }
@@ -71,6 +71,10 @@ setup_nomount() {
     else
         git fetch --all --tags --quiet
         git checkout "$1" --quiet
+        # a branch: bring an existing clone up to its upstream (fails on divergence, keeps local commits)
+        if git symbolic-ref -q HEAD >/dev/null && git rev-parse -q --verify '@{u}' >/dev/null; then
+            git merge --ff-only --quiet '@{u}'
+        fi
         echo "[-] Checked out specific target: $1"
     fi
 

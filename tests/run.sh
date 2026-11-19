@@ -301,6 +301,32 @@ if [ "$rc" -eq 1 ] && [ -e "$D/disable" ]; then ok "bootloop_check: unfinished p
 else bad "bootloop_check without boot_id, previous boot (rc=$rc)"; cat "$W/script.out"; fi
 rm -f "$S/date"
 
+# --- kernel/setup.sh on an existing clone (local bare repo as the remote, no network)
+if have git && realpath --relative-to=/ / >/dev/null 2>&1; then
+    G="$W/setup"; mkdir -p "$G/up/kernel/src" "$G/k/fs"
+    gitc() { GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.invalid \
+        GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.invalid git "$@"; }
+    up() { echo "$1" > "$G/up/kernel/src/f"; gitc -C "$G/up" add -A && gitc -C "$G/up" commit -qm "$1" && gitc -C "$G/up" push -q "$G/up.git" dev; }
+    gitc init -q --bare "$G/up.git"; gitc init -q "$G/up"; gitc -C "$G/up" checkout -q -b dev
+    up A; gitc -C "$G/up" tag v1; gitc -C "$G/up" push -q "$G/up.git" v1; a=$(gitc -C "$G/up" rev-parse HEAD)
+    gitc clone -q -b dev "$G/up.git" "$G/k/NoMount"
+    printf 'obj-y += x/\n' > "$G/k/fs/Makefile"; printf 'menu "x"\nendmenu\n' > "$G/k/fs/Kconfig"
+    up B; b=$(gitc -C "$G/up" rev-parse HEAD)
+    setup() { (cd "$G/k" && GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null sh "$R/kernel/setup.sh" "$@") > "$W/setup.out" 2>&1; }
+    head_of() { gitc -C "$G/k/NoMount" rev-parse HEAD; }
+    setup dev; rc=$?
+    [ "$rc" -eq 0 ] && [ "$(head_of)" = "$b" ] && [ -L "$G/k/fs/nomount" ] && ok "setup.sh <branch>: an existing clone moves to the branch head" ||
+        { bad "setup.sh <branch> on an existing clone (rc=$rc)"; cat "$W/setup.out"; }
+    setup v1; rc=$?
+    [ "$rc" -eq 0 ] && [ "$(head_of)" = "$a" ] && ok "setup.sh <tag>: checks out the tag" || { bad "setup.sh <tag> (rc=$rc)"; cat "$W/setup.out"; }
+    setup dev >/dev/null; echo local > "$G/k/NoMount/kernel/src/g"; gitc -C "$G/k/NoMount" add -A; gitc -C "$G/k/NoMount" commit -qm local
+    c=$(head_of); up D
+    setup dev; rc=$?
+    [ "$rc" -ne 0 ] && [ "$(head_of)" = "$c" ] && ok "setup.sh <branch>: diverged clone fails, local commit kept" || { bad "setup.sh diverged (rc=$rc)"; cat "$W/setup.out"; }
+else
+    skp "kernel/setup.sh on an existing clone (git or GNU realpath missing)"
+fi
+
 # --- nm CLI against a fake driver (tests/nm_fake_driver.c logs every request)
 CC=$(command -v cc || command -v gcc || command -v clang || true)
 if [ -n "$CC" ] && "$CC" -std=gnu11 -w -Dsyscall=nm_test_syscall -Dmain=nm_main -c "$R/userspace/src/nm.c" -o "$W/nm.o" 2>"$W/cc.out" &&
