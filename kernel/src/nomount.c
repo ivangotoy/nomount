@@ -582,8 +582,11 @@ static int nm_hijacked_iterate_dir(struct file *file, struct dir_context *ctx)
     }
     rcu_read_unlock();
 
-    if (unlikely(!orig_fop || !dir_node))
+    if (unlikely(!orig_fop || !dir_node)) {
+        /* the stream sits on its own cursor but the dir has no virtual children left: the listing ends here */
+        if (orig_fop && nm_rd_is_virtual(nm_rd_get(file, false), ctx->pos, nm_rd_compat())) return 0;
         return orig_fop ? nm_call_iterate(file, ctx, orig_fop) : -ENOTDIR;
+    }
     res = nm_iterate_view(file, ctx, orig_fop, dir_node, true, false);
     nm_dir_put(dir_node);
     return res;
