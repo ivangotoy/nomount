@@ -45,6 +45,8 @@ C="$R/.forgejo/module-ci.conf"
 grep -q 'master' "$C" && bad "module-ci.conf: zig master lookup present" || ok "module-ci.conf: no zig master lookup"
 grep -n 'curl ' "$C" | grep -v '^[0-9]*:fetch() ' > "$W/curls"
 [ ! -s "$W/curls" ] && ok "module-ci.conf: every download goes through fetch()" || bad "module-ci.conf: curl outside fetch(): $(cat "$W/curls")"
+grep '^fetch() ' "$C" | grep -q -- '--connect-timeout [0-9]' && grep '^fetch() ' "$C" | grep -qE -- '--speed-limit [0-9]+ --speed-time [0-9]+' &&
+    ok "module-ci.conf: fetch() fails a stalled download" || bad "module-ci.conf: fetch() has no connect/stall bound"
 n=$(grep -c '^ *fetch https://' "$C"); h=$(grep -cE '^ *fetch https://[^ ]+ [^ ]+ [0-9a-f]{64}$' "$C")
 [ "$n" -ge 3 ] && [ "$n" -eq "$h" ] && ok "module-ci.conf: $n downloads pinned by sha256" || bad "module-ci.conf: $h of $n downloads carry a sha256"
 grep -qE 'git -C "\$T/lkmloader" checkout -q [0-9a-f]{40}$' "$C" && ok "module-ci.conf: lkmloader pinned to a commit" || bad "module-ci.conf: lkmloader not pinned"
