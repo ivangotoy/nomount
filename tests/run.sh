@@ -86,9 +86,16 @@ for c in ADD_RULE DEL_RULE; do
 done
 
 # --- driver: a stream on its own virtual cursor whose dir lost its virtual children ends there (static check)
-awk '/^static int nm_hijacked_iterate_dir\(/,/^}$/' "$K_SRC" | awk '/if \(unlikely\(!orig_fop \|\| !dir_node\)\)/,/nm_call_iterate/' > "$W/passthru"
+awk '/^static int nm_hijacked_iterate_dir\(/,/^}$/' "$K_SRC" | awk '/if \(unlikely\(!orig_fop \|\| !dir_node\)\)/,/nm_iterate_noted/' > "$W/passthru"
 grep -q 'nm_rd_is_virtual(nm_rd_get(file, false), ctx->pos, nm_rd_compat())) return 0;' "$W/passthru" &&
     ok "driver: pass-through never hands the stream's virtual cursor to the filesystem" || bad "driver: pass-through hands a virtual cursor to the filesystem"
+
+# --- driver: every pass-through of a stream notes the real positions it hands out, from the first getdents on (static check)
+awk '/^static int nm_iterate_noted\(/,/^}$/' "$K_SRC" > "$W/noted"
+grep -q 'nm_rd_get(file, true))) return nm_call_iterate(real_file, ctx, fop);' "$W/noted" && grep -q 'nm_rd_note_real(rd, ctx->pos' "$W/noted" &&
+    awk '/^static int nm_iterate_view\(/,/^}$/' "$K_SRC" | grep -q 'uid_blocked || !dir_node)) return nm_iterate_noted(file, real_file, ctx, fop);' &&
+    awk '/^static int nm_hijacked_iterate_dir\(/,/^}$/' "$K_SRC" | grep -q 'return orig_fop ? nm_iterate_noted(file, file, ctx, orig_fop) : -ENOTDIR;' &&
+    ok "driver: pass-through positions are noted, allocation failure falls back to a plain pass-through" || bad "driver: pass-through hands out positions it does not note"
 
 # --- nm with the three zig command lines of build() in .forgejo/module-ci.conf
 if have zig; then

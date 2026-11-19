@@ -527,6 +527,23 @@ static struct dentry *nm_hijacked_lookup(struct inode *dir, struct dentry *dentr
     return ERR_PTR(-EOPNOTSUPP);
 }
 
+/* pass-through that notes every real position it hands out, so a cursor tag chosen later never matches one */
+static int nm_iterate_noted(struct file *file, struct file *real_file, struct dir_context *ctx, const struct file_operations *fop)
+{
+    struct nm_proxy_ctx proxy_ctx = { .orig_ctx = ctx, .native_view = true, .compat = nm_rd_compat() };
+    struct nm_rd_state *rd = nm_rd_get(file, false);
+    int res;
+
+    if (!rd && !(rd = nm_rd_get(file, true))) return nm_call_iterate(real_file, ctx, fop);
+    proxy_ctx.ctx = *ctx;
+    proxy_ctx.ctx.actor = nm_actor_proxy;
+    proxy_ctx.rd = rd;
+    res = nm_call_iterate(real_file, &proxy_ctx.ctx, fop);
+    ctx->pos = proxy_ctx.ctx.pos;
+    nm_rd_note_real(rd, ctx->pos, proxy_ctx.compat);
+    return res;
+}
+
 static int nm_iterate_view(struct file *file, struct dir_context *ctx, const struct file_operations *fop,
                            struct nm_dir_node *dir_node, bool native_view, bool opaque)
 {
@@ -545,8 +562,7 @@ static int nm_iterate_view(struct file *file, struct dir_context *ctx, const str
         ctx->pos = nm_rd_pack(rd, 0, 0, compat);
         goto emit_virtual;
     }
-    if (unlikely(uid_blocked || !dir_node))
-        return nm_call_iterate(real_file, ctx, fop);
+    if (unlikely(uid_blocked || !dir_node)) return nm_iterate_noted(file, real_file, ctx, fop);
     if (!rd && !(rd = nm_rd_get(file, true))) return -ENOMEM;
 
     struct nm_proxy_ctx proxy_ctx = {
@@ -585,7 +601,7 @@ static int nm_hijacked_iterate_dir(struct file *file, struct dir_context *ctx)
     if (unlikely(!orig_fop || !dir_node)) {
         /* the stream sits on its own cursor but the dir has no virtual children left: the listing ends here */
         if (orig_fop && nm_rd_is_virtual(nm_rd_get(file, false), ctx->pos, nm_rd_compat())) return 0;
-        return orig_fop ? nm_call_iterate(file, ctx, orig_fop) : -ENOTDIR;
+        return orig_fop ? nm_iterate_noted(file, file, ctx, orig_fop) : -ENOTDIR;
     }
     res = nm_iterate_view(file, ctx, orig_fop, dir_node, true, false);
     nm_dir_put(dir_node);
