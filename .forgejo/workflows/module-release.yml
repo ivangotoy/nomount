@@ -21,6 +21,9 @@ jobs:
           GIT_AUTHOR_EMAIL: ivangotoy@gmail.com
           GIT_COMMITTER_NAME: Ivan Angelov
           GIT_COMMITTER_EMAIL: ivangotoy@gmail.com
+          # module-ci.sh does not run in this step: a stalled clone or fetch fails instead of hanging
+          GIT_HTTP_LOW_SPEED_LIMIT: 1024
+          GIT_HTTP_LOW_SPEED_TIME: 60
         run: |
           set -eu
           git clone -q --branch main "$SERVER_URL/$REPOSITORY.git" pre
@@ -77,6 +80,9 @@ jobs:
           SERVER_URL: ${{ github.server_url }}
           REPOSITORY: ${{ github.repository }}
           BASE_SHA: ${{ github.sha }}
+          # the clone runs before module-ci.sh sets these: a stalled transfer fails instead of hanging
+          GIT_HTTP_LOW_SPEED_LIMIT: 1024
+          GIT_HTTP_LOW_SPEED_TIME: 60
         run: |
           set -eu
           git clone -q --branch main "$SERVER_URL/$REPOSITORY.git" src
