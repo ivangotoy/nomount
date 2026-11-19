@@ -111,6 +111,16 @@ if have zig; then
     if [ "$(uname -m)" = x86_64 ] && [ -x "$W/bin/nm-x86_64" ]; then
         "$W/bin/nm-x86_64" > "$W/usage" 2>&1
         if grep -q 'NoMount CLI' "$W/usage"; then ok "nm-x86_64 runs (usage)"; else bad "nm-x86_64 usage"; fi
+        # two holders of one lock file: the second gets "busy" (1) while the first holds it, the lock after it is gone
+        lk="$W/lockfile"; : > "$lk"
+        ( exec 9>>"$lk"; "$W/bin/nm-x86_64" --try-lock <&9 && : > "$W/held"; i=0
+          while [ ! -e "$W/release" ] && [ "$i" -lt 300 ]; do sleep 0.1; i=$((i + 1)); done ) & holder=$!
+        i=0; while [ ! -e "$W/held" ] && [ "$i" -lt 300 ]; do sleep 0.1; i=$((i + 1)); done
+        "$W/bin/nm-x86_64" --try-lock < "$lk"; busy=$?
+        : > "$W/release"; wait "$holder"
+        "$W/bin/nm-x86_64" --try-lock < "$lk"; free=$?
+        [ -e "$W/held" ] && [ "$busy" -eq 1 ] && [ "$free" -eq 0 ] && ok "nm --try-lock: second holder busy, lock free after the first exits" ||
+            bad "nm --try-lock two holders (held=$([ -e "$W/held" ] && echo y) busy=$busy free=$free)"
     fi
 else
     skp "zig cc nm (zig missing)"
@@ -123,6 +133,7 @@ cp "$R"/module/*.sh "$R/module/module.prop" "$M/"
 cat > "$M/bin/nm" <<'EOF'
 #!/bin/sh
 echo "$*" >> "$NM_STUB_LOG"
+case $1 in --try-lock) [ -n "${NM_STUB_LOCK_BUSY:-}" ] && exit 1; exit 0 ;; esac
 case $1 in version) [ -n "${NM_STUB_NO_DRIVER:-}" ] && [ ! -e "$NM_STUB_LOG.loaded" ] && exit 1; echo 23; exit 0 ;; esac
 exit "${NM_STUB_RC:-0}"
 EOF
@@ -157,19 +168,19 @@ touch "$W/modules/beta/disable" "$W/modules/gamma/skip_mount" "$W/modules/delta/
 sed -i 's/^description=.*/description=[old status] x/' "$M/module.prop"
 run_script metamount.sh; rc=$?
 if [ "$rc" -eq 0 ] && [ "$(grep '^module' "$L")" = "module load $W/modules/alpha" ] &&
-   grep -q '^description=A metamodule' "$M/module.prop" && [ ! -e "$D/.inject.lock" ]; then ok "metamount.sh: loads enabled modules only, resets description"
+   grep -q '^description=A metamodule' "$M/module.prop"; then ok "metamount.sh: loads enabled modules only, resets description"
 else bad "metamount.sh (rc=$rc)"; cat "$W/script.out" "$L"; fi
 
 reset_state; export NM_STUB_RC=1
 for m in alpha beta; do mkdir -p "$W/modules/$m"; done
 run_script metamount.sh; rc=$?
-if [ "$rc" -eq 1 ] && [ "$(grep -c '^module load' "$L")" -eq 2 ] && [ ! -e "$D/.inject.lock" ]; then ok "metamount.sh: load failure keeps going, exits 1"
+if [ "$rc" -eq 1 ] && [ "$(grep -c '^module load' "$L")" -eq 2 ]; then ok "metamount.sh: load failure keeps going, exits 1"
 else bad "metamount.sh load failure (rc=$rc)"; cat "$W/script.out" "$L"; fi
 
-reset_state; echo some-boot > "$D/.booting"; mkdir "$D/.boot.lock" "$D/.lkm.lock" "$D/.inject.lock"; touch "$D/dump_rules"
+reset_state; echo some-boot > "$D/.booting"; touch "$D/dump_rules"
 run_script boot-completed.sh; rc=$?
-if [ "$rc" -eq 0 ] && [ ! -e "$D/.booting" ] && [ ! -e "$D/.boot.lock" ] && [ ! -e "$D/.lkm.lock" ] && [ ! -e "$D/.inject.lock" ] &&
-   grep -qx 'rule list' "$L" && grep -q '^log .*rules dump end' "$L"; then ok "boot-completed.sh: clears semaphore and locks, dumps rules when flagged"
+if [ "$rc" -eq 0 ] && [ ! -e "$D/.booting" ] &&
+   grep -qx 'rule list' "$L" && grep -q '^log .*rules dump end' "$L"; then ok "boot-completed.sh: clears semaphore, dumps rules when flagged"
 else bad "boot-completed.sh (rc=$rc)"; cat "$W/script.out" "$L"; fi
 
 # service.sh re-applies the exclusions in the shape the WebUI writes (compact JSON, uid strings) and the isolated flag
@@ -184,16 +195,20 @@ run_script service.sh; rc=$?
 if [ "$rc" -eq 0 ] && ! grep -q '^uid' "$L"; then ok "service.sh: disabled module sends nothing"
 else bad "service.sh disabled (rc=$rc)"; cat "$W/script.out" "$L"; fi
 
-# a lock dir that never got its pid and boot_id (holder killed right after mkdir) must not cost the full timeout
-reset_state; mkdir "$D/.boot.lock"
-MODDIR=$M sh -c '. "$MODDIR/common.sh"; _lock_acquire "$NOMOUNT_DATA/.boot.lock" 5' > "$W/script.out" 2>&1; rc=$?
-if [ "$rc" -eq 0 ] && [ "$(cat "$D/.boot.lock/pid" 2>/dev/null)" != "" ]; then ok "_lock_acquire: lock dir without pid and boot_id is taken over"
-else bad "_lock_acquire empty lock dir (rc=$rc)"; cat "$W/script.out"; fi
-reset_state; mkdir "$D/.boot.lock"; sleep 600 & held=$!; echo "$held" > "$D/.boot.lock/pid"
-MODDIR=$M sh -c '. "$MODDIR/common.sh"; _lock_acquire "$NOMOUNT_DATA/.boot.lock" 3' > "$W/script.out" 2>&1; rc=$?
-kill "$held" 2>/dev/null; wait "$held" 2>/dev/null
-if [ "$rc" -eq 1 ] && [ "$(cat "$D/.boot.lock/pid")" = "$held" ]; then ok "_lock_acquire: lock held by a live pid is respected"
-else bad "_lock_acquire live holder (rc=$rc)"; cat "$W/script.out"; fi
+# file locks (nm --try-lock on fd 9): a free lock is taken, a held one is polled until the timeout
+reset_state
+MODDIR=$M sh -c '. "$MODDIR/common.sh"; _lock_acquire "$NOMOUNT_DATA/.boot.flock" 5' > "$W/script.out" 2>&1; rc=$?
+if [ "$rc" -eq 0 ] && [ "$(grep -c -- '^--try-lock' "$L")" -eq 1 ] && [ -f "$D/.boot.flock" ]; then ok "_lock_acquire: free lock taken at once"
+else bad "_lock_acquire free lock (rc=$rc)"; cat "$W/script.out" "$L"; fi
+reset_state
+NM_STUB_LOCK_BUSY=1 MODDIR=$M sh -c '. "$MODDIR/common.sh"; _lock_acquire "$NOMOUNT_DATA/.boot.flock" 2' > "$W/script.out" 2>&1; rc=$?
+if [ "$rc" -eq 1 ] && [ "$(grep -c -- '^--try-lock' "$L")" -eq 2 ]; then ok "_lock_acquire: held lock polled until the timeout"
+else bad "_lock_acquire held lock (rc=$rc, $(grep -c -- '^--try-lock' "$L") polls)"; cat "$W/script.out"; fi
+# an install upgraded from the mkdir-lock version keeps its old lock dirs (other names): boot is not affected
+reset_state; mkdir "$D/.boot.lock" "$D/.lkm.lock" "$D/.inject.lock"
+run_script post-fs-data.sh; rc=$?
+if [ "$rc" -eq 0 ] && [ ! -e "$D/disable" ]; then ok "post-fs-data.sh: leftover mkdir-lock dirs of the previous version do not block boot"
+else bad "post-fs-data.sh with leftover lock dirs (rc=$rc)"; cat "$W/script.out"; fi
 
 # --- driver install (customize.sh) and the boot fallback; ksud stub: KSUD_OK=<path part that loads>, KSUD_EXISTS=1
 K="$W/ksud-bin"; mkdir -p "$K"
@@ -286,22 +301,14 @@ grep -q '^rm -rf /data/adb/nomount/ ' "$R/module/uninstall.sh" && grep -q 'NOMOU
     ok "uninstall.sh removes the data dir that holds the fallback ko" || bad "fallback ko not under the uninstalled data dir"
 rm -f "$M/lkm/nomount.ko"
 
-# after a takeover, a lock that another waiter re-creates at once starts a new count (mv stub re-creates it once)
-reset_state; mkdir "$D/.boot.lock"; mkdir -p "$W/mvstub"
-printf '#!/bin/sh\necho "mv $*" >> "$NM_STUB_LOG"\n/bin/mv "$@" || exit\n[ -e "$NM_STUB_LOG.recreated" ] || { touch "$NM_STUB_LOG.recreated"; mkdir "$1"; }\n' > "$W/mvstub/mv"
-chmod +x "$W/mvstub/mv"
-PATH="$W/mvstub:$PATH" MODDIR=$M sh -c '. "$MODDIR/common.sh"; _lock_acquire "$NOMOUNT_DATA/.boot.lock" 5' > "$W/script.out" 2>&1; rc=$?
-rm -f "$L.recreated"
-[ "$(grep -c '^mv ' "$L")" -eq 1 ] && ok "_lock_acquire: a re-created lock is not taken over on the old count" ||
-    bad "_lock_acquire took over a re-created lock early (rc=$rc): $(grep '^mv ' "$L" | wc -l) takeovers"
-
 # bootloop_check runs twice per boot (metamount.sh and post-fs-data.sh); here boot_id is unreadable
 # and the wall clock ticks between the calls
 printf '#!/bin/sh\nn=$(cat "$NM_DATE_FILE" 2>/dev/null || echo 1000); echo $((n + 1)) > "$NM_DATE_FILE"; echo "$n"\n' > "$S/date"
 chmod +x "$S/date"
-no_boot_id_check() { NM_DATE_FILE="$W/date.n" sh -c 'MODDIR=$1; . "$MODDIR/common.sh"; _nm_boot_id() { :; }; bootloop_check && bootloop_check' sh "$M" > "$W/script.out" 2>&1; }
+mkdir -p "$W/catstub"; printf '#!/bin/sh\n[ "$1" = /proc/sys/kernel/random/boot_id ] && exit 1\nexec /bin/cat "$@"\n' > "$W/catstub/cat"; chmod +x "$W/catstub/cat"
+no_boot_id_check() { PATH="$W/catstub:$PATH" NM_DATE_FILE="$W/date.n" sh -c 'MODDIR=$1; . "$MODDIR/common.sh"; bootloop_check && bootloop_check' sh "$M" > "$W/script.out" 2>&1; }
 reset_state; no_boot_id_check; rc=$?
-if [ "$rc" -eq 0 ] && [ ! -e "$D/disable" ] && [ -s "$D/.booting" ]; then ok "bootloop_check: two calls in one boot without boot_id"
+if [ "$rc" -eq 0 ] && [ ! -e "$D/disable" ] && grep -q '^btime-' "$D/.booting"; then ok "bootloop_check: two calls in one boot without boot_id"
 else bad "bootloop_check without boot_id, same boot (rc=$rc)"; cat "$W/script.out"; fi
 reset_state; echo other-boot > "$D/.booting"; no_boot_id_check; rc=$?
 if [ "$rc" -eq 1 ] && [ -e "$D/disable" ]; then ok "bootloop_check: unfinished previous boot detected without boot_id"

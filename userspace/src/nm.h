@@ -403,7 +403,6 @@ static noinline int resolve_path(char *base, char *end, const char *cwd, const c
     if (base == end) return 0;
 
     char *out = base;
-    *out++ = '/';
     for (int pass = (*rel == '/'); pass < 2; pass++) {
         for (const char *s = pass ? rel : cwd; *s; ) {
             while (*s == '/') s++;
@@ -412,24 +411,27 @@ static noinline int resolve_path(char *base, char *end, const char *cwd, const c
             while (*s && *s != '/') s++;
             size_t len = (size_t)(s - c);
             if (len > NAME_MAX) return -ENAMETOOLONG;
-            if (c[0] == '.') {
+            if (lexical && c[0] == '.') {
                 if (len == 1) continue;
-                if (lexical && len == 2 && c[1] == '.') {
-                    while (out > base + 1 && out[-1] != '/') out--;
-                    if (out > base + 1) out--;
+                if (len == 2 && c[1] == '.') {
+                    while (out > base && *--out != '/') {}
                     continue;
                 }
             }
-            if (out > base + 1) {
-                if (out == end) return 0;
-                *out++ = '/';
-            }
-            if ((size_t)(end - out) < len) return 0;
+            if ((size_t)(end - out) <= len) return 0;
+            *out++ = '/';
             memcpy(out, c, len);
             out += len;
         }
     }
-    return (lexical && out - base <= 1) ? -EINVAL : (int)(out - base);
+    if (!lexical) {
+        size_t rel_len = strlen(rel);
+        if (rel_len && rel[rel_len - 1] == '/') {
+            if (out == end) return 0;
+            *out++ = '/';
+        }
+    }
+    return out == base ? -EINVAL : (int)(out - base);
 }
 
 static noinline int nm_invalid_path(const char *path, int error) {
@@ -681,26 +683,21 @@ static int nm_marker(int fd, const char *name) {
     return !S_ISDIR(st.st_mode);
 }
 
-static int nm_directory_rule(struct nm_walk *ctx, int fd) {
+static int nm_directory_rule(int fd, int check_contents) {
     int rc = nm_marker(fd, ".remove");
     if (rc < 0) return rc;
-    if (rc) {
-        nm_emit(ctx, NM_FLAG_WHITEOUT);
-        return 0;
-    }
+    if (rc) return NM_FLAG_WHITEOUT;
     int opaque = nm_marker(fd, ".replace");
     if (opaque < 0) return opaque;
     if (!opaque) {
         char value;
-        ssize_t n = fgetxattr(fd, "trusted.overlay.opaque", &value, 1);
-        if (n < 0 && errno != ENODATA && errno != ENOTSUP && errno != ERANGE) return -errno;
-        opaque = n == 1 && value == 'y';
+        opaque = fgetxattr(fd, "trusted.overlay.opaque", &value, 1) == 1 && value == 'y';
     }
     if (!opaque) return 0;
+    if (!check_contents) return NM_FLAG_OPAQUE;
     int entries = nm_dir_has_content(fd, ".");
     if (entries < 0) return entries;
-    nm_emit(ctx, entries ? NM_FLAG_OPAQUE : NM_FLAG_WHITEOUT);
-    return 0;
+    return entries ? NM_FLAG_OPAQUE : NM_FLAG_WHITEOUT;
 }
 
 static int nm_walk_module(struct nm_walk *ctx, int parent_fd, const char *name,
@@ -728,7 +725,11 @@ static int nm_walk_module(struct nm_walk *ctx, int parent_fd, const char *name,
     struct nm_ancestor here = { parent, st.st_dev, st.st_ino };
     for (const struct nm_ancestor *a = parent; a; a = a->parent)
         if (a->dev == here.dev && a->ino == here.ino) { rc = -ELOOP; goto done; }
-    if ((rc = nm_directory_rule(ctx, dirfd(d)))) goto done;
+    unsigned cmd = ctx->payload ? ctx->payload->cmd : NM_CMD_UNSPEC;
+    int flags = nm_directory_rule(dirfd(d), cmd != NM_CMD_DEL_RULE);
+    if (flags < 0) { rc = flags; goto done; }
+    if (flags) nm_emit(ctx, flags);
+    if (flags == NM_FLAG_WHITEOUT && cmd != NM_CMD_DEL_RULE) goto done;
     size_t len = strlen(ctx->path);
     for (;;) {
         errno = 0;

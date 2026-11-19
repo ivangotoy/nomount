@@ -651,20 +651,24 @@ do_real_unlink:
     return -EPERM;
 }
 
+static inline const struct inode_operations *nm_get_real_iop(struct inode *dir)
+{
+    const struct inode_operations *iop = smp_load_acquire(&dir->i_op);
+    struct nm_dir_ops *ops = nm_get_nm_iop(iop);
+    return ops ? ops->orig_iop : iop;
+}
+
 static int nm_hijacked_rename(IDMAP_ARG struct inode *old_dir, struct dentry *old_dentry,
                                struct inode *new_dir, struct dentry *new_dentry, unsigned int flags)
 {
     const struct inode_operations *orig_iop;
     struct inode *old_inode = d_inode(old_dentry);
     struct inode *new_inode = d_inode(new_dentry);
-    struct nm_dir_ops *iop;
 
     if ((old_inode && nm_inode_is_virtual(old_inode)) || (new_inode && nm_inode_is_virtual(new_inode)))
         return -EPERM;
 
-    orig_iop = smp_load_acquire(&old_dir->i_op);
-    if ((iop = nm_get_nm_iop(orig_iop)))
-        orig_iop = iop->orig_iop;
+    orig_iop = nm_get_real_iop(old_dir);
     if (orig_iop && orig_iop->rename)
         return orig_iop->rename(IDMAP_CALL old_dir, old_dentry, new_dir, new_dentry, flags);
     return -EPERM;
@@ -674,12 +678,9 @@ static int nm_hijacked_rmdir(struct inode *dir, struct dentry *dentry)
 {
     const struct inode_operations *orig_iop;
     struct inode *inode = d_inode(dentry);
-    struct nm_dir_ops *iop;
     if (inode && nm_inode_is_virtual(inode))
         return -EPERM;
-    orig_iop = smp_load_acquire(&dir->i_op);
-    if ((iop = nm_get_nm_iop(orig_iop)))
-        orig_iop = iop->orig_iop;
+    orig_iop = nm_get_real_iop(dir);
     if (orig_iop && orig_iop->rmdir)
         return orig_iop->rmdir(dir, dentry);
     return -EPERM;
@@ -689,13 +690,10 @@ static int nm_hijacked_link(struct dentry *old_dentry, struct inode *dir, struct
 {
     const struct inode_operations *orig_iop;
     struct inode *inode = d_inode(old_dentry);
-    struct nm_dir_ops *iop;
 
     if (inode && nm_inode_is_virtual(inode))
         return -EPERM;
-    orig_iop = smp_load_acquire(&dir->i_op);
-    if ((iop = nm_get_nm_iop(orig_iop)))
-        orig_iop = iop->orig_iop;
+    orig_iop = nm_get_real_iop(dir);
     if (orig_iop && orig_iop->link)
         return orig_iop->link(old_dentry, dir, new_dentry);
     return -EPERM;
@@ -1822,10 +1820,7 @@ static void nm_resolve_anchor_locked(struct nm_leaf *leaf)
 static void nm_free_leaf(struct nm_leaf *leaf, bool deferred)
 {
     if (leaf->anchor.dentry) path_put(&leaf->anchor);
-    if (leaf->this_dir) {
-        if (READ_ONCE(leaf->this_dir->owner) == leaf) WRITE_ONCE(leaf->this_dir->owner, NULL);
-        nm_dir_put(leaf->this_dir);
-    }
+    nm_dir_put(leaf->this_dir);
     nm_dir_put(leaf->parent_dir);
     if (deferred) kfree_rcu(leaf, rcu);
     else kfree(leaf);
@@ -2061,21 +2056,6 @@ static int nm_prune_empty_virtual_dirs_locked(struct nm_dir_node *dir)
 
 /*** Rule Operations ***/
 
-/* nm_actor_proxy() skips these, so the rule could never match on readdir. */
-static bool nm_vpath_has_dot_component(const char *path, u16 len)
-{
-    u16 i = 0;
-
-    while (i < len) {
-        u16 start = i;
-        while (i < len && path[i] != '/') i++;
-        if (i - start == 1 && path[start] == '.') return true;
-        if (i - start == 2 && path[start] == '.' && path[start + 1] == '.') return true;
-        i++;
-    }
-    return false;
-}
-
 static int nm_add_rule_locked(const char *v_path, const char *r_path, u16 v_len, u16 r_len, u32 flags,
                               unsigned int uid, unsigned int uid_end, unsigned int deny_start, unsigned int deny_end)
 {
@@ -2091,10 +2071,15 @@ static int nm_add_rule_locked(const char *v_path, const char *r_path, u16 v_len,
 
     while (v_len > 1 && v_path[v_len - 1] == '/') v_len--;
     if (v_len <= 1 || v_path[0] != '/' || uid > uid_end) return -EINVAL;
-    for (u16 i = 1; i < v_len; i++)
-        if (!v_path[i] || (v_path[i] == '/' && v_path[i - 1] == '/')) return -EINVAL;
-    if (nm_vpath_has_dot_component(v_path, v_len))
-        return -EINVAL;
+    for (u16 i = 1; i < v_len; i++) {
+        u16 start = i;
+        while (i < v_len && v_path[i] != '/') {
+            if (!v_path[i]) return -EINVAL;
+            i++;
+        }
+        u16 len = i - start;
+        if (!len || (len <= 2 && v_path[start] == '.' && (len == 1 || v_path[start + 1] == '.'))) return -EINVAL;
+    }
 
     if (deny_start || deny_end) {
         if (!deny_start || !deny_end) return -EINVAL;
@@ -2180,7 +2165,7 @@ static int nm_del_rule_locked(const char *path, u16 len, unsigned int uid,
                               unsigned int uid_end, unsigned int deny_start, unsigned int deny_end)
 {
     struct nm_leaf *leaf;
-    struct nm_rule_array *old, *array = NULL;
+    struct nm_rule_array *old, *array;
     int pos = 0, new_count;
     bool stub_virtual = false;
 
@@ -2193,6 +2178,10 @@ static int nm_del_rule_locked(const char *path, u16 len, unsigned int uid,
 
     if (leaf->this_dir && rcu_access_pointer(leaf->this_dir->children) && ((old->rules[pos].flags & NM_FLAG_IS_DIR) || !pos || old->uid_count == old->count)) {
         if (old->rules[pos].flags & NM_FLAG_VIRTUAL_DIR) return 0;
+        if (!old->uid_count) {
+            nm_publish_rules_locked(leaf, &nm_virtual_parent_rules, old);
+            return 0;
+        }
         stub_virtual = true;
     }
 
@@ -2206,20 +2195,14 @@ static int nm_del_rule_locked(const char *path, u16 len, unsigned int uid,
 
     if (!(array = nm_alloc_rule_array(new_count))) return -ENOMEM;
 
-    for (int i = 0, j = 0; i < old->count; i++) {
-        if (!stub_virtual && i == pos) continue;
-        if (stub_virtual && i == pos) {
-            array->rules[j] = (struct nm_rule){
-                .target_uid = uid, .uid_end = uid_end,
-                .deny_start = deny_start, .deny_end = deny_end,
-                .flags = NM_FLAG_IS_DIR | NM_FLAG_VIRTUAL_DIR,
-            };
-            j++;
-            continue;
-        }
-        nm_copy_rule(&array->rules[j], &old->rules[i]);
-        j++;
-    }
+    for (int i = 0; i < pos; i++) nm_copy_rule(&array->rules[i], &old->rules[i]);
+    if (stub_virtual)
+        array->rules[pos] = (struct nm_rule){
+            .target_uid = uid, .uid_end = uid_end,
+            .deny_start = deny_start, .deny_end = deny_end,
+            .flags = NM_FLAG_IS_DIR | NM_FLAG_VIRTUAL_DIR,
+        };
+    for (int i = pos + 1, j = pos + stub_virtual; i < old->count; i++, j++) nm_copy_rule(&array->rules[j], &old->rules[i]);
     array->uid_count = new_count - (!array->rules[0].target_uid && !array->rules[0].uid_end);
 
     nm_publish_rules_locked(leaf, array, old);
