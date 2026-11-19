@@ -164,6 +164,7 @@ elif [ "$LKM_RUNNING" = true ]; then
       cp "$OLD_MODPATH/lkm/nomount.ko" "$MODPATH/lkm/nomount.ko"
       # the old nm only when the new one cannot talk to the running driver
       if ! "$MODPATH/bin/nm" version >/dev/null 2>&1; then
+        cp "$MODPATH/bin/nm" "$MODPATH/bin/nmlock" && set_perm "$MODPATH/bin/nmlock" 0 0 0755
         cp "$OLD_MODPATH/bin/nm" "$MODPATH/bin/nm" 2>/dev/null && set_perm "$MODPATH/bin/nm" 0 0 0755
       fi
     fi
@@ -182,6 +183,7 @@ else
     ui_print "  [!] New driver failed; restoring previous working LKM..."
     mkdir -p "$MODPATH/lkm"
     cp "$OLD_MODPATH/lkm/nomount.ko" "$MODPATH/lkm/nomount.ko"
+    cp "$MODPATH/bin/nm" "$MODPATH/bin/nmlock" && set_perm "$MODPATH/bin/nmlock" 0 0 0755
     cp "$OLD_MODPATH/bin/nm" "$MODPATH/bin/nm" 2>/dev/null && set_perm "$MODPATH/bin/nm" 0 0 0755
     if try_load_ko "$MODPATH/lkm/nomount.ko"; then
       LOADED_FRESH=true

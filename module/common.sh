@@ -3,6 +3,9 @@
 
 NOMOUNT_DATA="${NOMOUNT_DATA:-/data/adb/nomount}"
 LOADER="$MODDIR/bin/nm"
+# customize.sh keeps the zip's nm here when it puts an older nm back (nm before --try-lock)
+LOCKER="$MODDIR/bin/nmlock"
+[ -x "$LOCKER" ] || LOCKER="$LOADER"
 BOOT_SEMAPHORE="$NOMOUNT_DATA/.booting"
 DUMP_RULES_FLAG="$NOMOUNT_DATA/dump_rules"
 PROP_FILE="$MODDIR/module.prop"
@@ -46,10 +49,13 @@ load_ko() {
 }
 
 _lock_acquire() {
-    local n=0
+    local n=0 rc out
     command exec 9>>"$1" || return 1
-    until "$LOADER" --try-lock <&9; do
-        if [ "$?" -ne 1 ] || [ "$((n += 1))" -ge "$2" ]; then
+    until out=$("$LOCKER" --try-lock <&9 2>/dev/null); do
+        rc=$?
+        # an nm without --try-lock answers with its usage: there is no lock to wait for
+        case $out in *"NoMount CLI"*) klogwarn "nm has no --try-lock, $1 not locked"; return 0 ;; esac
+        if [ "$rc" -ne 1 ] || [ "$((n += 1))" -ge "$2" ]; then
             _lock_release
             return 1
         fi

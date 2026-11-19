@@ -204,6 +204,14 @@ reset_state
 NM_STUB_LOCK_BUSY=1 MODDIR=$M sh -c '. "$MODDIR/common.sh"; _lock_acquire "$NOMOUNT_DATA/.boot.flock" 2' > "$W/script.out" 2>&1; rc=$?
 if [ "$rc" -eq 1 ] && [ "$(grep -c -- '^--try-lock' "$L")" -eq 2 ]; then ok "_lock_acquire: held lock polled until the timeout"
 else bad "_lock_acquire held lock (rc=$rc, $(grep -c -- '^--try-lock' "$L") polls)"; cat "$W/script.out"; fi
+# an nm older than --try-lock (customize.sh can install the previous module's nm) answers it with its usage, exit 1:
+# boot must neither wait out the lock timeout nor fail
+reset_state; cp "$M/bin/nm" "$W/nm.new"
+printf '#!/bin/sh\necho "$*" >> "$NM_STUB_LOG"\ncase $1 in --try-lock) echo "NoMount CLI (nm) - Usage Guide:"; exit 1 ;; version) echo 23 ;; esac\nexit 0\n' > "$M/bin/nm"
+run_script post-fs-data.sh; rc=$?
+cp "$W/nm.new" "$M/bin/nm"
+if [ "$rc" -eq 0 ] && [ ! -e "$D/disable" ] && [ "$(grep -c -- '^--try-lock' "$L")" -le 2 ]; then ok "post-fs-data.sh: an nm without --try-lock does not block boot"
+else bad "post-fs-data.sh with an nm without --try-lock (rc=$rc, $(grep -c -- '^--try-lock' "$L") polls)"; cat "$W/script.out"; fi
 # an install upgraded from the mkdir-lock version keeps its old lock dirs (other names): boot is not affected
 reset_state; mkdir "$D/.boot.lock" "$D/.lkm.lock" "$D/.inject.lock"
 run_script post-fs-data.sh; rc=$?
@@ -258,6 +266,28 @@ NM_STUB_NO_DRIVER=1 inst; rc=$?
 if [ "$rc" -eq 0 ] && [ "$(cat "$I/lkm/nomount.ko")" = OLD ] && grep -q '# old nm' "$I/bin/nm" && grep -q 'ready for injection' "$W/inst.out"; then
     ok "customize.sh: running driver, new ko rejected, only the old nm answers -> old nm kept"
 else bad "customize.sh rejected ko + new nm silent (rc=$rc)"; cat "$W/inst.out"; fi
+
+# when customize.sh puts the previous nm back, the zip's nm stays as bin/nmlock for the boot locks
+reset_state; old_module OLD; old_nm; echo 'nomount 65536 0 - Live 0x0' > "$W/proc-modules"
+NM_STUB_NO_DRIVER=1 inst; rc=$?
+[ "$rc" -eq 0 ] && grep -q '# old nm' "$I/bin/nm" && cmp -s "$I/bin/nmlock" "$M/bin/nm" && ok "customize.sh: old nm put back -> new nm kept as bin/nmlock" ||
+    { bad "customize.sh old nm put back, nmlock (rc=$rc)"; cat "$W/inst.out"; }
+reset_state; old_module OLD; : > "$W/proc-modules"
+printf '#!/bin/sh\n# old nm\ncase $1 in version) [ -e "$NM_STUB_LOG.loaded" ] || exit 1; echo 23 ;; esac\nexit 0\n' > "$W/old/bin/nm"
+NM_STUB_NO_DRIVER=1 KSUD_OK=lkm/nomount.ko inst; rc=$?
+[ "$rc" -eq 0 ] && grep -q '# old nm' "$I/bin/nm" && cmp -s "$I/bin/nmlock" "$M/bin/nm" && ok "customize.sh: previous driver restored -> new nm kept as bin/nmlock" ||
+    { bad "customize.sh previous driver restored, nmlock (rc=$rc)"; cat "$W/inst.out"; }
+reset_state; old_module OLD; echo 'nomount 65536 0 - Live 0x0' > "$W/proc-modules"; export KSUD_EXISTS=1
+inst; rc=$?; unset KSUD_EXISTS
+[ "$rc" -eq 0 ] && [ ! -e "$I/bin/nmlock" ] && ok "customize.sh: zip's nm kept -> no bin/nmlock" || { bad "customize.sh nmlock without old nm (rc=$rc)"; cat "$W/inst.out"; }
+# boot locks through bin/nmlock when it is there
+reset_state; cp "$M/bin/nm" "$W/nm.new"; cp "$M/bin/nm" "$M/bin/nmlock"
+printf '#!/bin/sh\necho "$*" >> "$NM_STUB_LOG"\ncase $1 in --try-lock) exit 1 ;; version) echo 23 ;; esac\nexit 0\n' > "$M/bin/nm"
+sed -i 's|^echo "\$\*" >> "\$NM_STUB_LOG"$|echo "nmlock $*" >> "$NM_STUB_LOG"|' "$M/bin/nmlock"
+run_script post-fs-data.sh; rc=$?
+cp "$W/nm.new" "$M/bin/nm"; rm -f "$M/bin/nmlock"
+if [ "$rc" -eq 0 ] && grep -q '^nmlock --try-lock' "$L" && ! grep -q '^--try-lock' "$L"; then ok "post-fs-data.sh: locks through bin/nmlock when present"
+else bad "post-fs-data.sh nmlock (rc=$rc)"; cat "$W/script.out" "$L"; fi
 
 # running driver and no .ko in the zip for this kernel: the running driver's ko must reach the new module
 reset_state; old_module OLD; echo 'nomount 65536 0 - Live 0x0' > "$W/proc-modules"
