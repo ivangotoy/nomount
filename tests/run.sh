@@ -225,6 +225,18 @@ if [ "$rc" -eq 0 ] && [ "$(cat "$I/lkm/nomount.ko")" = OLD ] && [ ! -e "$D/nomou
     ok "customize.sh: running driver, new ko rejected -> previous ko kept"
 else bad "customize.sh running driver + rejected ko (rc=$rc)"; cat "$W/inst.out"; fi
 
+# running driver, new ko rejected: the old ko is kept; the old nm only when the new nm cannot talk to the running driver
+old_nm() { printf '#!/bin/sh\n# old nm\necho "old $*" >> "$NM_STUB_LOG"\n[ "$1" = version ] && echo 23\nexit 0\n' > "$W/old/bin/nm"; chmod +x "$W/old/bin/nm"; }
+reset_state; old_module OLD; old_nm; echo 'nomount 65536 0 - Live 0x0' > "$W/proc-modules"
+inst; rc=$?
+if [ "$rc" -eq 0 ] && [ "$(cat "$I/lkm/nomount.ko")" = OLD ] && ! grep -q '# old nm' "$I/bin/nm"; then ok "customize.sh: running driver, new ko rejected, new nm answers -> new nm kept"
+else bad "customize.sh rejected ko + new nm answers (rc=$rc)"; cat "$W/inst.out"; fi
+reset_state; old_module OLD; old_nm; echo 'nomount 65536 0 - Live 0x0' > "$W/proc-modules"
+NM_STUB_NO_DRIVER=1 inst; rc=$?
+if [ "$rc" -eq 0 ] && [ "$(cat "$I/lkm/nomount.ko")" = OLD ] && grep -q '# old nm' "$I/bin/nm" && grep -q 'ready for injection' "$W/inst.out"; then
+    ok "customize.sh: running driver, new ko rejected, only the old nm answers -> old nm kept"
+else bad "customize.sh rejected ko + new nm silent (rc=$rc)"; cat "$W/inst.out"; fi
+
 # running driver and no .ko in the zip for this kernel: the running driver's ko must reach the new module
 reset_state; old_module OLD; echo 'nomount 65536 0 - Live 0x0' > "$W/proc-modules"
 INST_KO=nomount-android14-6.1.ko inst; rc=$?; unset INST_KO

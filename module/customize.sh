@@ -162,7 +162,10 @@ elif [ "$LKM_RUNNING" = true ]; then
     if [ -f "$OLD_MODPATH/lkm/nomount.ko" ]; then
       mkdir -p "$MODPATH/lkm"
       cp "$OLD_MODPATH/lkm/nomount.ko" "$MODPATH/lkm/nomount.ko"
-      cp "$OLD_MODPATH/bin/nm" "$MODPATH/bin/nm" 2>/dev/null && set_perm "$MODPATH/bin/nm" 0 0 0755
+      # the old nm only when the new one cannot talk to the running driver
+      if ! "$MODPATH/bin/nm" version >/dev/null 2>&1; then
+        cp "$OLD_MODPATH/bin/nm" "$MODPATH/bin/nm" 2>/dev/null && set_perm "$MODPATH/bin/nm" 0 0 0755
+      fi
     fi
   fi
 
