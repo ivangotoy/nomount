@@ -48,6 +48,15 @@ The kernel driver and the metamodule **must be updated together**. There are no 
 
 and a lot of other misc changes :)
 
+### Fork fixes (this fork's releases only)
+- module/: with a NoMount LKM running and no `.ko` in the zip for this kernel, the installer keeps the running driver's `.ko`; before, the module had no driver at the next boot and disabled itself.
+- module/: when the new driver is rejected at install, the new `nm` is kept if it talks to the running driver (the old `nm` only if it does not).
+- module/: `service.sh` reads its files from the same data dir as the other boot scripts.
+- kernel/: a listing that was in its virtual phase when the directory lost its last injected entry now ends there instead of handing NoMount's cursor to the filesystem (ext4 could list entries twice).
+- kernel/: every real position of a directory stream is recorded from its first `getdents`, so a NoMount cursor chosen later does not match a position handed out earlier.
+- kernel/setup.sh: re-running it with a branch name fast-forwards an existing clone to that branch (fails, keeping local commits, if they diverged).
+- CI: a stalled download in the build fails instead of holding the release job.
+
 #### Thanks to everyone who kept testing, contributing and reporting through the rough bits: @ZQZCC, @nleloc, @sohan-f, and the testers on the Telegram group 🫂
 
 **Full Changelog**: https://github.com/maxsteeel/nomount/compare/v2.2.0...v2.3.0
