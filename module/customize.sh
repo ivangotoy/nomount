@@ -153,6 +153,10 @@ elif [ "$LKM_RUNNING" = true ]; then
     ui_print "      It cannot be loaded while the current driver runs."
   elif [ "$KO_RC" = 2 ]; then
     ui_print "  [*] No new KO shipped; keeping the running driver as is."
+    if [ -f "$OLD_MODPATH/lkm/nomount.ko" ]; then
+      mkdir -p "$MODPATH/lkm"
+      cp "$OLD_MODPATH/lkm/nomount.ko" "$MODPATH/lkm/nomount.ko"
+    fi
   else
     ui_print "  [!] New driver failed verification; keeping the running one."
     if [ -f "$OLD_MODPATH/lkm/nomount.ko" ]; then

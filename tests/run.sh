@@ -187,7 +187,7 @@ chmod +x "$K/ksud" "$K/uname"
 inst() {
     I="$W/inst"; O="$W/old"; rm -rf "$I" "$W/root-bin"; mkdir -p "$I/bin" "$I/lkm"
     cp "$M/bin/nm" "$I/bin/nm-arm64"; cp "$M/lkm/lkmloader" "$I/bin/lkmloader-arm64"
-    echo NEW > "$I/lkm/nomount-android15-6.6.ko"
+    echo NEW > "$I/lkm/${INST_KO:-nomount-android15-6.6.ko}"
     PATH="$K:$PATH" MODPATH="$I" ARCH=arm64 KSU=true NOMOUNT_OLD_MODPATH="$O" NOMOUNT_PROC_MODULES="$W/proc-modules" \
         NOMOUNT_ROOT_BIN_DIR="$W/root-bin" sh -c 'ui_print() { echo "$*"; }; set_perm() { :; }; abort() { echo "ABORT: $*"; exit 1; }; . "$1"' \
         sh "$R/module/customize.sh" > "$W/inst.out" 2>&1
@@ -205,6 +205,13 @@ inst; rc=$?
 if [ "$rc" -eq 0 ] && [ "$(cat "$I/lkm/nomount.ko")" = OLD ] && [ ! -e "$D/nomount-fallback.ko" ] && [ ! -e "$I/lkm/nomount-android15-6.6.ko" ]; then
     ok "customize.sh: running driver, new ko rejected -> previous ko kept"
 else bad "customize.sh running driver + rejected ko (rc=$rc)"; cat "$W/inst.out"; fi
+
+# running driver and no .ko in the zip for this kernel: the running driver's ko must reach the new module
+reset_state; old_module OLD; echo 'nomount 65536 0 - Live 0x0' > "$W/proc-modules"
+INST_KO=nomount-android14-6.1.ko inst; rc=$?; unset INST_KO
+if [ "$rc" -eq 0 ] && [ "$(cat "$I/lkm/nomount.ko" 2>/dev/null)" = OLD ] && grep -q 'No new KO shipped' "$W/inst.out" &&
+   [ ! -e "$I/lkm/nomount-android14-6.1.ko" ]; then ok "customize.sh: running driver, no ko for this kernel -> running ko kept for boot"
+else bad "customize.sh running driver + no ko shipped (rc=$rc)"; cat "$W/inst.out"; fi
 
 reset_state; old_module OLD; : > "$W/proc-modules"; echo stale > "$D/nomount-fallback.ko"
 NM_STUB_NO_DRIVER=1 KSUD_OK=nomount-android15-6.6.ko inst; rc=$?
