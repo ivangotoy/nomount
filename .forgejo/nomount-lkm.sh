@@ -8,7 +8,11 @@ mkdir -p "$out"; out=$(cd "$out" && pwd)
 [ -n "${KDIR:-}" ] && [ -f "$KDIR/Makefile" ] || { echo "KDIR not available: ${KDIR:-<empty>}" >&2; exit 1; }
 command -v llvm-strip >/dev/null || { echo "llvm-strip not available" >&2; exit 1; }
 
-# x86_64 kdir, as upstream
+# x86_64 kdir, as upstream (.github/workflows/build-lkm.yml): x86_64_defconfig + modules_prepare
+# without vmlinux, so modpost prints "Module.symvers is missing" for every x86_64 build. That
+# defconfig leaves MODVERSIONS and MODULE_SIG off, so the x86_64 .ko has no symbol CRCs and a plain
+# defconfig vermagic: it is best-effort and not load-tested. The arm64 .ko is built against the
+# KMI's own kdir and its Module.symvers.
 KDIR_X64="/opt/ddk/kdir-x64/$kmi"
 (
     unset ARCH CROSS_COMPILE
