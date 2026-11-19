@@ -419,5 +419,58 @@ if [ -n "$CC" ] && "$CC" -std=gnu11 -O2 -Wall -Wextra -Werror "$R/tests/readdir_
 elif [ -n "$CC" ]; then bad "readdir model build"; cat "$W/cc.out"
 else skp "readdir model (no C compiler)"; fi
 
+# --- release cleanup (module-ci.sh release): delete only a release the forge still reports as a draft.
+# The publish PATCH may be applied by the forge while its reply is lost; deleting on "PUBLISHED != 1"
+# alone then removes a published release. Real: log/die/jget/api/cleanup and the publish statements
+# (REQ= .. PUBLISHED=1) cut from .forgejo/module-ci.sh; stubbed: curl (fake forge at https://forge.invalid).
+CI="$R/.forgejo/module-ci.sh"
+if have bash && have python3; then
+    mkdir -p "$W/relstub"
+    {
+        echo 'set -euo pipefail'
+        echo 'API=https://forge.invalid/api/v1/repos/example/mod RELEASE_ID=7 PUBLISHED=0 SRC_SHA=0123456789abcdef0123456789abcdef01234567'
+        echo 'AUTH_DIR=$(mktemp -d) AUTH_H=$AUTH_DIR/header; : > "$AUTH_H"'
+        sed -n '/^log() {/p; /^die() {/p; /^jget() {/,/^print(d)/p; /^api() {/,/^}/p; /^cleanup() {/,/^}/p' "$CI"
+        echo 'trap cleanup EXIT'
+        echo 'if [ "$1" = publish ]; then'
+        sed -n '/^REQ="\$(python3 -I -c .import json,sys;print(json.dumps({"draft":False/,/^PUBLISHED=1$/p' "$CI"
+        echo 'else die "upload failed"; fi'
+    } > "$W/rel.sh"
+    # fake curl: logs "METHOD URL"; PATCH exits $PATCH_RC; GET of the release answers draft=$DRAFT or fails (DRAFT=fail)
+    cat > "$W/relstub/curl" <<EOF
+#!/bin/sh
+m=GET; p=; for a in "\$@"; do [ "\$p" = -X ] && m=\$a; p=\$a; u=\$a; done
+echo "\$m \$u" >> "$W/calls"
+case "\$m" in
+  PATCH) exit "\${PATCH_RC:-0}" ;;
+  GET) [ "\$DRAFT" = fail ] && exit 22; printf '{"id": 7, "draft": %s}' "\$DRAFT" ;;
+esac
+EOF
+    chmod +x "$W/relstub/curl"
+    rel() { mode=$1; shift; : > "$W/calls"; env PATH="$W/relstub:$PATH" TMPDIR="$W" "$@" bash "$W/rel.sh" "$mode" > "$W/rel.err" 2>&1; }
+    if ! grep -q '^PUBLISHED=1$' "$W/rel.sh" || ! grep -q '^cleanup() {' "$W/rel.sh" || ! grep -q '^api() {' "$W/rel.sh"; then
+        bad "release cleanup: cleanup()/api()/publish statements not found in module-ci.sh"
+    else
+        rel publish PATCH_RC=28 DRAFT=false; rc=$?
+        [ "$rc" -ne 0 ] && grep -q '^PATCH ' "$W/calls" && ! grep -q '^DELETE ' "$W/calls" &&
+            ok "release cleanup: failed PATCH, forge reports published: release kept, job fails" ||
+            bad "release cleanup: failed PATCH, published (rc=$rc): $(tr '\n' ';' < "$W/calls")"
+        rel upload DRAFT=true; rc=$?
+        [ "$rc" -ne 0 ] && grep -qx 'DELETE https://forge.invalid/api/v1/repos/example/mod/releases/7' "$W/calls" &&
+            ok "release cleanup: failure before publish deletes the draft" ||
+            bad "release cleanup: draft not deleted (rc=$rc): $(tr '\n' ';' < "$W/calls")"
+        rel publish PATCH_RC=28 DRAFT=fail; rc=$?
+        [ "$rc" -ne 0 ] && ! grep -q '^DELETE ' "$W/calls" && grep -q 'release 7' "$W/rel.err" &&
+            ok "release cleanup: unreadable state: nothing deleted, release id logged" ||
+            bad "release cleanup: unreadable state (rc=$rc): $(tr '\n' ';' < "$W/calls") $(cat "$W/rel.err")"
+        rel publish DRAFT=false; rc=$?
+        [ "$rc" -eq 0 ] && ! grep -q '^DELETE ' "$W/calls" &&
+            ok "release cleanup: good publish deletes nothing, exit 0" ||
+            bad "release cleanup: good publish (rc=$rc): $(tr '\n' ';' < "$W/calls")"
+    fi
+else
+    skp "release cleanup (bash/python3 missing)"
+fi
+
 echo "summary: $pass passed, $fail failed, $skip skipped"
 [ "$fail" -eq 0 ]
