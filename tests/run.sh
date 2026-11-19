@@ -158,6 +158,18 @@ if [ "$rc" -eq 0 ] && [ ! -e "$D/.booting" ] && [ ! -e "$D/.boot.lock" ] && [ ! 
    grep -qx 'rule list' "$L" && grep -q '^log .*rules dump end' "$L"; then ok "boot-completed.sh: clears semaphore and locks, dumps rules when flagged"
 else bad "boot-completed.sh (rc=$rc)"; cat "$W/script.out" "$L"; fi
 
+# service.sh re-applies the exclusions in the shape the WebUI writes (compact JSON, uid strings) and the isolated flag
+reset_state
+printf '%s' '[{"uid":"10123","label":"a \"uid\":\"5\" b","pkg":"p.a"},{"uid":"10456","label":"B","pkg":"p.b"}]' > "$D/.exclusion_list.json"
+touch "$D/.block_isolated_uids"
+run_script service.sh; rc=$?
+if [ "$rc" -eq 0 ] && [ "$(grep '^uid' "$L")" = "$(printf 'uid add 10123 10456\nuid block_isolated on')" ]; then ok "service.sh: re-applies excluded UIDs and isolated blocking"
+else bad "service.sh (rc=$rc)"; cat "$W/script.out" "$L"; fi
+reset_state; echo '[{"uid":"10123"}]' > "$D/.exclusion_list.json"; touch "$D/.block_isolated_uids" "$D/disable"
+run_script service.sh; rc=$?
+if [ "$rc" -eq 0 ] && ! grep -q '^uid' "$L"; then ok "service.sh: disabled module sends nothing"
+else bad "service.sh disabled (rc=$rc)"; cat "$W/script.out" "$L"; fi
+
 # a lock dir that never got its pid and boot_id (holder killed right after mkdir) must not cost the full timeout
 reset_state; mkdir "$D/.boot.lock"
 MODDIR=$M sh -c '. "$MODDIR/common.sh"; _lock_acquire "$NOMOUNT_DATA/.boot.lock" 5' > "$W/script.out" 2>&1; rc=$?

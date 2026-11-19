@@ -4,9 +4,9 @@ MODDIR=${0%/*}
 . "$MODDIR/common.sh"
 
 NM_BIN="$MODDIR/bin/nm"
-EXCLUSION_JSON="/data/adb/nomount/.exclusion_list.json"
-ISOLATED_FLAG="/data/adb/nomount/.block_isolated_uids"
-DISABLE_FLAG="/data/adb/nomount/disable"
+EXCLUSION_JSON="$NOMOUNT_DATA/.exclusion_list.json"
+ISOLATED_FLAG="$NOMOUNT_DATA/.block_isolated_uids"
+DISABLE_FLAG="$NOMOUNT_DATA/disable"
 
 [ -x "$NM_BIN" ] || exit 0
 [ -f "$DISABLE_FLAG" ] && exit 0
