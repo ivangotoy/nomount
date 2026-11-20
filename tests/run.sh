@@ -429,19 +429,23 @@ if have bash && have python3; then
     {
         echo 'set -euo pipefail'
         echo 'API=https://forge.invalid/api/v1/repos/example/mod RELEASE_ID=7 PUBLISHED=0 SRC_SHA=0123456789abcdef0123456789abcdef01234567'
+        echo 'DRAFT_REQUESTED=0 TAG=v9.9-ci7 REQ={}'
         echo 'AUTH_DIR=$(mktemp -d) AUTH_H=$AUTH_DIR/header; : > "$AUTH_H"'
         sed -n '/^log() {/p; /^die() {/p; /^jget() {/,/^print(d)/p; /^api() {/,/^}/p; /^cleanup() {/,/^}/p' "$CI"
         echo 'trap cleanup EXIT'
-        echo 'if [ "$1" = publish ]; then'
+        echo 'if [ "$1" = create ]; then RELEASE_ID=""'
+        sed -n '/^DRAFT_REQUESTED=1$/,/^RELEASE_ID="\$(api POST \/releases /p' "$CI"
+        echo 'elif [ "$1" = publish ]; then'
         sed -n '/^REQ="\$(python3 -I -c .import json,sys;print(json.dumps({"draft":False/,/^PUBLISHED=1$/p' "$CI"
         echo 'else die "upload failed"; fi'
     } > "$W/rel.sh"
-    # fake curl: logs "METHOD URL"; PATCH exits $PATCH_RC; GET of the release answers draft=$DRAFT or fails (DRAFT=fail)
+    # fake curl: logs "METHOD URL"; POST exits $POST_RC, PATCH $PATCH_RC; GET of the release answers draft=$DRAFT or fails (DRAFT=fail)
     cat > "$W/relstub/curl" <<EOF
 #!/bin/sh
 m=GET; p=; for a in "\$@"; do [ "\$p" = -X ] && m=\$a; p=\$a; u=\$a; done
 echo "\$m \$u" >> "$W/calls"
 case "\$m" in
+  POST) exit "\${POST_RC:-0}" ;;
   PATCH) exit "\${PATCH_RC:-0}" ;;
   GET) [ "\$DRAFT" = fail ] && exit 22; printf '{"id": 7, "draft": %s}' "\$DRAFT" ;;
 esac
@@ -467,6 +471,11 @@ EOF
         [ "$rc" -eq 0 ] && ! grep -q '^DELETE ' "$W/calls" &&
             ok "release cleanup: good publish deletes nothing, exit 0" ||
             bad "release cleanup: good publish (rc=$rc): $(tr '\n' ';' < "$W/calls")"
+        rel create POST_RC=28 DRAFT=true; rc=$?
+        [ "$rc" -ne 0 ] && grep -q '^POST ' "$W/calls" && ! grep -q '^DELETE ' "$W/calls" &&
+            grep -q 'the draft request for v9.9-ci7 failed or its reply was lost' "$W/rel.err" && ! grep -q 'unbound variable' "$W/rel.err" &&
+            ok "release cleanup: failed or unanswered draft request: tag logged for a check by hand" ||
+            bad "release cleanup: lost draft reply (rc=$rc): $(tr '\n' ';' < "$W/calls") $(cat "$W/rel.err")"
     fi
 else
     skp "release cleanup (bash/python3 missing)"
