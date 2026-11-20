@@ -472,5 +472,50 @@ else
     skp "release cleanup (bash/python3 missing)"
 fi
 
+# build step (module-ci.sh build): whatever the build user started is killed after the build,
+# failed or not. setpriv and chown are stubs: the stub records a kill and never runs it (here the
+# test user may well be the build uid, and `kill -9 -1` would end this session).
+if ! command -v bash >/dev/null 2>&1 || ! command -v git >/dev/null 2>&1; then
+    skp "module-ci.sh build step (bash/git missing)"
+else
+    BW="$(mktemp -d "$W/case.XXXXXX")"; mkdir -p "$BW/bin"
+    cat > "$BW/bin/setpriv" <<'EOF'
+#!/bin/sh
+case " $* " in *" kill "*) echo "kill-requested $*" >> "$SETPRIV_LOG"; exit 0 ;; esac
+while [ $# -gt 0 ]; do case "$1" in --*) shift ;; *) break ;; esac; done
+exec "$@"
+EOF
+    printf '#!/bin/sh\nexit 0\n' > "$BW/bin/chown"
+    chmod 755 "$BW/bin/setpriv" "$BW/bin/chown"
+    # build_step <ok|failed>: a work tree with this module-ci.sh and a conf whose build() passes or fails
+    build_step() {
+        _b="$BW/$1"; mkdir -p "$_b/.forgejo"
+        cp "$R/.forgejo/module-ci.sh" "$_b/.forgejo/"
+        if [ "$1" = ok ]; then
+            printf 'build() { echo zip > "$OUT/module.zip"; }\n' > "$_b/.forgejo/module-ci.conf"
+        else
+            printf 'build() { echo "stub build failed" >&2; return 1; }\n' > "$_b/.forgejo/module-ci.conf"
+        fi
+        (cd "$_b" && git init -q && git add -A && git -c user.name=t -c user.email=t@example.invalid commit -qm t) > /dev/null 2>&1
+        : > "$_b/setpriv.log"
+        if [ "$(PATH="$BW/bin:$PATH" command -v setpriv)" != "$BW/bin/setpriv" ]; then
+            bad "build step $1: setpriv stub not first on PATH, not run"; return
+        fi
+        _rc=0
+        (cd "$_b" && env PATH="$BW/bin:$PATH" SETPRIV_LOG="$_b/setpriv.log" SERVER_URL=https://forge.invalid \
+            REPOSITORY=owner/repo BASE_SHA="$(git rev-parse HEAD)" bash .forgejo/module-ci.sh build "$_b") > "$_b/out.log" 2>&1 || _rc=$?
+        if [ "$1" = ok ]; then _want=0; [ -f "$_b/.ci-out/module.zip" ] && _res=zip || _res=missing
+        else _want=1; grep -q "stub build failed" "$_b/out.log" && _res=stub-failure || _res=missing; fi
+        if [ "$([ "$_rc" = 0 ] && echo 0 || echo 1)" = "$_want" ] && [ "$_res" != missing ] \
+            && ! grep -q "unbound variable" "$_b/out.log" && grep -q 'kill-requested .*--reuid=1000 .*kill -9 -1' "$_b/setpriv.log"; then
+            ok "module-ci.sh build step $1: exit as expected, build user's processes killed"
+        else
+            bad "module-ci.sh build step $1 (rc=$_rc, $_res, kills: $(grep -c kill-requested "$_b/setpriv.log")): $(tail -n 2 "$_b/out.log" | tr '\n' ' ')"
+        fi
+    }
+    build_step ok
+    build_step failed
+fi
+
 echo "summary: $pass passed, $fail failed, $skip skipped"
 [ "$fail" -eq 0 ]
