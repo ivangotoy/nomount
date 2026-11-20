@@ -526,5 +526,61 @@ EOF
     build_step failed
 fi
 
+# --- module-release.yml: the job builds the dispatched commit even when main has moved since. The
+# steps whose run text clones or calls `module-ci.sh build` (the merged tree for the kernel modules
+# and the build) run against local bare repos: the fork's main has a commit after BASE_SHA, the
+# upstream is the dispatched commit itself (nothing to merge). The fixture's .forgejo/module-ci.sh is
+# a marker script that records which commit's copy ran; the real pipeline is never reachable from
+# here, and git may use the file protocol only. Run blocks are read without PyYAML.
+wf_dispatched() {
+    _wf=$W/workflow
+    mkdir -p "$_wf/job" "$_wf/forge/owner" "$_wf/seed/.forgejo" "$_wf/seed/kernel/src" || return 1
+    git init -q --bare "$_wf/forge/owner/repo.git" && git init -q --bare "$_wf/up.git" && git init -q "$_wf/seed" || return 1
+    printf 'UPSTREAM_URL=file://%s/up.git\nUPSTREAM_BRANCH=main\n' "$_wf" > "$_wf/seed/.forgejo/module-ci.conf"
+    for _c in dispatched later-on-main; do
+        printf '#!/bin/sh\necho "%s $*" >> "$MARKER_LOG"\n' "$_c" > "$_wf/seed/.forgejo/module-ci.sh"
+        printf '%s\n' "$_c" > "$_wf/seed/kernel/src/version"
+        (cd "$_wf/seed" && git add -A && git -c user.name=t -c user.email=t@example.invalid commit -qm "$_c") || return 1
+        [ "$_c" = dispatched ] && _base=$(git -C "$_wf/seed" rev-parse HEAD)
+    done
+    git -C "$_wf/seed" push -q "$_wf/forge/owner/repo.git" HEAD:refs/heads/main || return 1
+    git -C "$_wf/seed" push -q "$_wf/up.git" "$_base:refs/heads/main" || return 1
+    python3 -I - "$R/.forgejo/workflows/module-release.yml" > "$_wf/steps.sh" <<'PY'
+import re, sys
+steps, cur = [], None
+for l in open(sys.argv[1]).read().split("\n"):
+    if re.match(r"^      - name:", l):
+        cur = {"run": [], "in": False}; steps.append(cur); continue
+    if cur is None:
+        continue
+    if re.match(r"^        run: \|\s*$", l):
+        cur["in"] = True; continue
+    m = re.match(r"^        run: (.+)$", l)
+    if m:
+        cur["run"].append(m.group(1)); continue
+    if cur["in"]:
+        if l.startswith("          ") or not l.strip():
+            cur["run"].append(l[10:])
+        else:
+            cur["in"] = False
+for st in steps:
+    text = "\n".join(st["run"])
+    if "git clone" in text or "module-ci.sh build" in text:
+        print("(\n" + text + "\n)")
+PY
+    : > "$_wf/marker.log"
+    (cd "$_wf/job" && env GIT_ALLOW_PROTOCOL=file SERVER_URL="file://$_wf/forge" REPOSITORY=owner/repo BASE_SHA="$_base" \
+        MARKER_LOG="$_wf/marker.log" sh "$_wf/steps.sh") > "$_wf/out.log" 2>&1 || { tail -n 2 "$_wf/out.log"; return 1; }
+    [ "$(git -C "$_wf/job/pre" rev-parse HEAD)" = "$_base" ] && [ "$(git -C "$_wf/job/src" rev-parse HEAD)" = "$_base" ] &&
+        [ "$(cat "$_wf/job/lkm/tree")" = "$(git -C "$_wf/seed" rev-parse "$_base:kernel/src")" ] &&
+        [ "$(cat "$_wf/marker.log")" = "dispatched build src" ] ||
+        { echo "pre $(git -C "$_wf/job/pre" log -1 --format=%s 2>&1), src $(git -C "$_wf/job/src" log -1 --format=%s 2>&1), ran: $(tr '\n' ';' < "$_wf/marker.log")"; return 1; }
+}
+if have python3 && have git; then
+    check "module-release.yml: kernel modules, checkout and build use the dispatched commit after main moved" wf_dispatched
+else
+    skp "module-release.yml dispatched-commit check (python3/git missing)"
+fi
+
 echo "summary: $pass passed, $fail failed, $skip skipped"
 [ "$fail" -eq 0 ]
