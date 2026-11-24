@@ -170,3 +170,7 @@ nm rule add --uid 10123 /system/build.prop /data/local/tmp/my_build.prop
 ### Disclaimer
 
 **NoMount** is a kernel modification tool intended for research and development. Modifying kernel behavior carries inherent risks. The developers are not responsible for bricked devices, data loss, or thermonuclear war.
+
+## More KernelSU modules
+
+Check out my other great KernelSU modules here: https://git.digtvbg.com/explore/repos?q=kernelsu-module&topic=1
