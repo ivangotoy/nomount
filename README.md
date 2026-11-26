@@ -79,6 +79,8 @@ For detailed instructions on how to patch your kernel source or compile a custom
 
 If your kernel already has NoMount integrated, or if you plan to use the included / compiled LKM, simply download the latest module from [Releases](https://github.com/maxsteeel/nomount/releases) or the [Nightly builds (dev branch)](https://nightly.link/maxsteeel/nomount/workflows/build/dev). Flash it via KernelSU/APatch and reboot your device.
 
+This fork's builds, with its own fixes on top of upstream, are published at https://git.digtvbg.com/ivangotoy/nomount/releases.
+
 After rebooting, just install your favorite modules (like audio mods or system tweaks) in KernelSU/APatch exactly as you normally would. NoMount's Metamodule will automatically intercept them at boot and use VFS injection instead of traditional mounts.
 
 ## How to Use It (CLI)
