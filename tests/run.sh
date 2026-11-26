@@ -304,7 +304,8 @@ for case in rejected restored; do
         printf '#!/bin/sh\n# old nm\ncase $1 in version) [ -e "$NM_STUB_LOG.loaded" ] || exit 1; echo 23 ;; esac\nexit 0\n' > "$W/old/bin/nm"
         PATH="$W/lockfail:$PATH" NM_STUB_NO_DRIVER=1 KSUD_OK=lkm/nomount.ko inst; rc=$?
     fi
-    if ! grep -q '# old nm' "$I/bin/nm" 2>/dev/null && [ ! -e "$I/bin/nmlock" ]; then ok "customize.sh: $case, bin/nmlock not written -> previous nm not put back, no partial nmlock (rc=$rc)"
+    [ "$case" = rejected ] && want=1 || want=0
+    if [ "$rc" -eq "$want" ] && ! grep -q '# old nm' "$I/bin/nm" 2>/dev/null && [ ! -e "$I/bin/nmlock" ]; then ok "customize.sh: $case, bin/nmlock not written -> previous nm not put back, no partial nmlock (rc=$rc)"
     else bad "customize.sh: $case, previous nm put back without bin/nmlock (rc=$rc)"; cat "$W/inst.out"; fi
 done
 reset_state; old_module OLD; echo 'nomount 65536 0 - Live 0x0' > "$W/proc-modules"; export KSUD_EXISTS=1
@@ -348,6 +349,16 @@ reset_state; old_module OLD; : > "$W/proc-modules"
 PATH="$W/cpfail:$PATH" MVFAIL='*/lkm/nomount-android15-6.6.ko' NM_STUB_NO_DRIVER=1 KSUD_OK=nomount-android15-6.6.ko inst; rc=$?
 if [ "$rc" -ne 0 ] && grep -q 'ABORT' "$W/inst.out"; then ok "customize.sh: loaded ko not moved into place -> install fails"
 else bad "customize.sh failed mv of the loaded ko (rc=$rc)"; cat "$W/inst.out"; fi
+reset_state; old_module OLD; echo 'nomount 65536 0 - Live 0x0' > "$W/proc-modules"
+PATH="$W/cpfail:$PATH" MVFAIL='*/bin/lkmloader-arm64' KSUD_EXISTS=1 inst; rc=$?
+if [ "$rc" -ne 0 ] && grep -q 'ABORT' "$W/inst.out"; then ok "customize.sh: zip's lkmloader not moved into place -> install fails"
+else bad "customize.sh failed mv of the zip's lkmloader (rc=$rc)"; cat "$W/inst.out"; fi
+# no exact ko for this kernel: the loop's match (another branch, same kernel version) is the one moved
+reset_state; old_module OLD; : > "$W/proc-modules"
+PATH="$W/cpfail:$PATH" INST_KO=nomount-android14-6.6.ko MVFAIL='*/lkm/nomount-android14-6.6.ko' NM_STUB_NO_DRIVER=1 KSUD_OK=nomount-android14-6.6.ko inst; rc=$?
+if [ "$rc" -ne 0 ] && grep -q 'ABORT' "$W/inst.out" && grep -q 'Trying fallback: nomount-android14-6.6.ko' "$W/inst.out"; then
+    ok "customize.sh: loop-matched ko not moved into place -> install fails"
+else bad "customize.sh failed mv of the loop-matched ko (rc=$rc)"; cat "$W/inst.out"; fi
 
 reset_state; old_module OLD; : > "$W/proc-modules"; echo stale > "$D/nomount-fallback.ko"
 NM_STUB_NO_DRIVER=1 KSUD_OK=nomount-android15-6.6.ko inst; rc=$?
