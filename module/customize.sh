@@ -265,7 +265,13 @@ rm -f "$NOMOUNT_DATA/.booting"
 
 # the staged driver is unproven: keep the running one where boot can load it if the new one fails
 if [ "$STAGED_UNPROVEN" = true ] && [ "$NM_CURRENT_VER" -ge "$NM_REQUIRED_VER" ] && [ -f "$OLD_MODPATH/lkm/nomount.ko" ]; then
-  cp "$OLD_MODPATH/lkm/nomount.ko" "$NOMOUNT_DATA/nomount-fallback.ko" && ui_print "  [*] Current driver kept as boot fallback."
+  # through a temp file: a failed copy (full /data) leaves the fallback that is there
+  if cp "$OLD_MODPATH/lkm/nomount.ko" "$NOMOUNT_DATA/nomount-fallback.ko.tmp" &&
+     mv -f "$NOMOUNT_DATA/nomount-fallback.ko.tmp" "$NOMOUNT_DATA/nomount-fallback.ko"; then
+    ui_print "  [*] Current driver kept as boot fallback."
+  else
+    rm -f "$NOMOUNT_DATA/nomount-fallback.ko.tmp"
+  fi
 elif [ "$BUILTIN" != true ]; then
   rm -f "$NOMOUNT_DATA/nomount-fallback.ko"
 fi

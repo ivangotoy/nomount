@@ -357,6 +357,12 @@ NM_STUB_NO_DRIVER=1 KSUD_OK=nomount-fallback.ko FULL_DEST='*/lkm/nomount.ko' PAT
 if [ "$rc" -eq 0 ] && [ ! -e "$D/disable" ] && [ "$(cat "$M/lkm/nomount.ko")" = OLD ]; then
     ok "post-fs-data.sh: fallback loaded, copy over the module's ko fails -> module's ko is still the running driver"
 else bad "post-fs-data.sh fallback with a failed copy (rc=$rc, module ko: $(cat "$M/lkm/nomount.ko"))"; cat "$W/script.out"; fi
+# install after a fallback boot with a full /data: a failed save of the boot fallback keeps the one there
+reset_state; old_module OLD; echo OLD > "$D/nomount-fallback.ko"; echo 'nomount 65536 0 - Live 0x0' > "$W/proc-modules"
+PATH="$W/fullstub:$PATH" FULL_DEST="$D/*" KSUD_EXISTS=1 inst; rc=$?
+if [ "$rc" -eq 0 ] && [ "$(cat "$D/nomount-fallback.ko")" = OLD ] && [ -z "$(ls "$D" | grep -v '^nomount-fallback.ko$')" ]; then
+    ok "customize.sh: failed save of the boot fallback keeps the previous fallback, no temp file"
+else bad "customize.sh failed fallback save (rc=$rc, fallback: $(cat "$D/nomount-fallback.ko"), data: $(ls "$D" | tr '\n' ' '))"; cat "$W/inst.out"; fi
 reset_state; echo NEW > "$M/lkm/nomount.ko"; echo OLD > "$D/nomount-fallback.ko"
 NM_STUB_NO_DRIVER=1 KSUD_OK=nomount.ko PATH="$K:$PATH" sh "$M/post-fs-data.sh" > "$W/script.out" 2>&1; rc=$?
 if [ "$rc" -eq 0 ] && ! grep -q 'nomount-fallback.ko' "$L" && [ "$(cat "$M/lkm/nomount.ko")" = NEW ]; then ok "post-fs-data.sh: new ko loads -> fallback untouched"
