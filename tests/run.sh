@@ -137,8 +137,8 @@ case $1 in --try-lock) [ -n "${NM_STUB_LOCK_BUSY:-}" ] && exit 1; exit 0 ;; esac
 case $1 in version) [ -n "${NM_STUB_NO_DRIVER:-}" ] && [ ! -e "$NM_STUB_LOG.loaded" ] && exit 1; echo 23; exit 0 ;; esac
 exit "${NM_STUB_RC:-0}"
 EOF
-printf '#!/bin/sh\necho "lkmloader $*" >> "$NM_STUB_LOG"\nexit 1\n' > "$M/lkm/lkmloader"
-printf '#!/bin/sh\nexit 0\n' > "$S/rmmod"
+printf '#!/bin/sh\necho "lkmloader $*" >> "$NM_STUB_LOG"\n[ -n "${LKM_RACE:-}" ] && { touch "$NM_STUB_LOG.loaded"; echo "lkmloader: File exists"; }\nexit 1\n' > "$M/lkm/lkmloader"
+printf '#!/bin/sh\necho "rmmod $*" >> "$NM_STUB_LOG"\nrm -f "$NM_STUB_LOG.loaded"\n' > "$S/rmmod"
 printf '#!/bin/sh\necho "log $*" >> "$NM_STUB_LOG"\n' > "$S/log"
 chmod +x "$M/bin/nm" "$M/lkm/lkmloader" "$S"/*
 export NM_STUB_LOG="$L" NOMOUNT_DATA="$D" PATH="$S:$PATH"
@@ -225,6 +225,7 @@ cat > "$K/ksud" <<'EOF2'
 case $1 in
     -h) echo "  insmod    Load a kernel module"; exit 0 ;;
     insmod) echo "ksud insmod $2" >> "$NM_STUB_LOG"
+        [ -n "${KSUD_RACE:-}" ] && { touch "$NM_STUB_LOG.loaded"; echo "insmod: File exists"; exit 1; }
         if [ -n "${KSUD_OK:-}" ]; then case $2 in *"$KSUD_OK"*) touch "$NM_STUB_LOG.loaded"; exit 0 ;; esac; fi
         [ -n "${KSUD_EXISTS:-}" ] && { echo "insmod: File exists"; exit 1; }
         echo "insmod: Invalid module format"; exit 1 ;;
@@ -341,6 +342,18 @@ if [ "$rc" -eq 0 ] && ! grep -q 'nomount-fallback.ko' "$L" && [ "$(cat "$M/lkm/n
 else bad "post-fs-data.sh normal path (rc=$rc)"; cat "$W/script.out" "$L"; fi
 grep -q '^rm -rf /data/adb/nomount/ ' "$R/module/uninstall.sh" && grep -q 'NOMOUNT_DATA/nomount-fallback.ko' "$R/module/common.sh" &&
     ok "uninstall.sh removes the data dir that holds the fallback ko" || bad "fallback ko not under the uninstalled data dir"
+# both boot scripts load at once (no lock): the other one's driver arrives during this load, which then
+# answers "File exists"; that driver is kept (no rmmod) and boot goes on
+for race in KSUD_RACE LKM_RACE; do
+    reset_state; echo NEW > "$M/lkm/nomount.ko"
+    if [ "$race" = KSUD_RACE ]; then
+        NM_STUB_NO_DRIVER=1 KSUD_RACE=1 PATH="$K:$PATH" sh "$M/post-fs-data.sh" > "$W/script.out" 2>&1; rc=$?
+    else
+        NM_STUB_NO_DRIVER=1 LKM_RACE=1 sh "$M/post-fs-data.sh" > "$W/script.out" 2>&1; rc=$?
+    fi
+    if [ "$rc" -eq 0 ] && [ ! -e "$D/disable" ] && ! grep -q '^rmmod' "$L" && [ -e "$L.loaded" ]; then ok "post-fs-data.sh: driver loaded meanwhile ($race) is kept"
+    else bad "post-fs-data.sh driver loaded meanwhile, $race (rc=$rc)"; cat "$W/script.out" "$L"; fi
+done
 rm -f "$M/lkm/nomount.ko"
 
 # bootloop_check runs twice per boot (metamount.sh and post-fs-data.sh); here boot_id is unreadable

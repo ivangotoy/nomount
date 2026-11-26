@@ -37,11 +37,14 @@ load_ko() {
         if try "$root_cmd" insmod "$1" && "$LOADER" version >/dev/null 2>&1; then
             return 0
         fi
+        # a driver that answers was loaded meanwhile (both boot scripts loading at once): keep it
+        "$LOADER" version >/dev/null 2>&1 && return 0
         klogwarn "$root_cmd path failed, falling back to lkmloader"
         rmmod nomount 2>/dev/null
     fi
 
     if ! { try "$MODDIR/lkm/lkmloader" "$1" && "$LOADER" version >/dev/null 2>&1; }; then
+        "$LOADER" version >/dev/null 2>&1 && return 0
         klogerr "lkmloader failed; LKM not loaded"
         return 1
     fi
