@@ -10,7 +10,7 @@ display_usage() {
     echo "  --cleanup:             Cleans up previous modifications made by the script (doesn't revert in-kernel patches)."
     echo "  <branch-commit-or-tag>: Sets up or updates NoMount to the specified branch head, tag or commit."
     echo "  -h, --help:            Displays this usage information."
-    echo "  (no args):             Sets up or updates NoMount to the head of the dev branch (master if there is no dev)."
+    echo "  (no args):             Sets up or updates NoMount to the newest v* tag (the head of dev, or master, if there is no tag)."
 }
 
 initialize_variables() {
