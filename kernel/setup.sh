@@ -105,7 +105,8 @@ setup_nomount() {
                     print lines[i]
                 }
             }
-        ' "$FS_KCONFIG" > "$FS_KCONFIG.tmp" && mv "$FS_KCONFIG.tmp" "$FS_KCONFIG"
+        ' "$FS_KCONFIG" > "$FS_KCONFIG.tmp" && mv "$FS_KCONFIG.tmp" "$FS_KCONFIG" ||
+            { rm -f "$FS_KCONFIG.tmp"; echo '[ERROR] fs/Kconfig could not be modified.'; exit 1; }
         echo "[+] Modified fs/Kconfig."
     fi
 

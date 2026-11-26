@@ -449,6 +449,12 @@ if have git && realpath --relative-to=/ / >/dev/null 2>&1; then
     c=$(head_of); up D
     setup dev; rc=$?
     [ "$rc" -ne 0 ] && [ "$(head_of)" = "$c" ] && ok "setup.sh <branch>: diverged clone fails, local commit kept" || { bad "setup.sh diverged (rc=$rc)"; cat "$W/setup.out"; }
+    # fs/Kconfig cannot be rewritten (awk fails, e.g. a full disk): setup fails and leaves no Kconfig.tmp
+    sed -i '/fs\/nomount\/Kconfig/d' "$G/k/fs/Kconfig"; mkdir -p "$G/awkfail"
+    printf '#!/bin/sh\necho "awk: write error" >&2\nexit 2\n' > "$G/awkfail/awk"; chmod +x "$G/awkfail/awk"
+    PATH="$G/awkfail:$PATH" setup v1; rc=$?
+    [ "$rc" -ne 0 ] && [ ! -e "$G/k/fs/Kconfig.tmp" ] && ! grep -q 'Modified fs/Kconfig' "$W/setup.out" && ok "setup.sh: failed fs/Kconfig rewrite fails, no temp file" ||
+        { bad "setup.sh failed Kconfig rewrite (rc=$rc, tmp: $([ -e "$G/k/fs/Kconfig.tmp" ] && echo left))"; cat "$W/setup.out"; }
 else
     skp "kernel/setup.sh on an existing clone (git or GNU realpath missing)"
 fi
