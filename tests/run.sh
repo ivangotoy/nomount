@@ -308,6 +308,17 @@ for ko in nomount-android14-6.1.ko nomount-android15-6.6.ko; do
     if [ "$rc" -ne 0 ] && grep -q 'ABORT' "$W/inst.out"; then ok "customize.sh: running driver, $ko, running ko not copied -> install fails"
     else bad "customize.sh running driver, $ko, failed copy of the running ko (rc=$rc)"; cat "$W/inst.out"; fi
 done
+# the zip's nm or the loaded ko cannot be moved into place: the install fails instead of completing without it
+printf '#!/bin/sh\ncase "$1" in $MVFAIL) echo "mv: rename failed: I/O error" >&2; exit 1 ;; esac\nexec /bin/mv "$@"\n' > "$W/cpfail/mv"
+chmod +x "$W/cpfail/mv"
+reset_state; old_module OLD; echo 'nomount 65536 0 - Live 0x0' > "$W/proc-modules"
+PATH="$W/cpfail:$PATH" MVFAIL='*/bin/nm-arm64' KSUD_EXISTS=1 inst; rc=$?
+if [ "$rc" -ne 0 ] && grep -q 'ABORT' "$W/inst.out"; then ok "customize.sh: zip's nm not moved into place -> install fails"
+else bad "customize.sh failed mv of the zip's nm (rc=$rc)"; cat "$W/inst.out"; fi
+reset_state; old_module OLD; : > "$W/proc-modules"
+PATH="$W/cpfail:$PATH" MVFAIL='*/lkm/nomount-android15-6.6.ko' NM_STUB_NO_DRIVER=1 KSUD_OK=nomount-android15-6.6.ko inst; rc=$?
+if [ "$rc" -ne 0 ] && grep -q 'ABORT' "$W/inst.out"; then ok "customize.sh: loaded ko not moved into place -> install fails"
+else bad "customize.sh failed mv of the loaded ko (rc=$rc)"; cat "$W/inst.out"; fi
 
 reset_state; old_module OLD; : > "$W/proc-modules"; echo stale > "$D/nomount-fallback.ko"
 NM_STUB_NO_DRIVER=1 KSUD_OK=nomount-android15-6.6.ko inst; rc=$?

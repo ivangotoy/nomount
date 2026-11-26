@@ -25,10 +25,10 @@ fi
 if [ ! -f "$MODPATH/bin/nm-$ARCH_BIN" ]; then
   abort "! Unsupported architecture: $ARCH"
 fi
-mv "$MODPATH/bin/nm-$ARCH_BIN" "$MODPATH/bin/nm"
+mv "$MODPATH/bin/nm-$ARCH_BIN" "$MODPATH/bin/nm" || abort "! Could not install nm"
 set_perm "$MODPATH/bin/nm" 0 0 0755
 
-mv "$MODPATH/bin/lkmloader-$ARCH_BIN" "$MODPATH/lkm/lkmloader"
+mv "$MODPATH/bin/lkmloader-$ARCH_BIN" "$MODPATH/lkm/lkmloader" || abort "! Could not install lkmloader"
 set_perm "$MODPATH/lkm/lkmloader" 0 0 0755
 rm -rf "$MODPATH"/bin/nm-* "$MODPATH"/bin/lkmloader-*
 
@@ -77,7 +77,7 @@ load_ko_for_kernel() {
     ui_print "  [*] Trying: ${exact##*/}"
     try_load_ko "$exact"; rc=$?
     if [ "$rc" = 0 ] || { [ "$rc" = 3 ] && [ -n "$unproven" ]; }; then
-      mv "$exact" "$MODPATH/lkm/nomount.ko"
+      mv "$exact" "$MODPATH/lkm/nomount.ko" || abort "! Could not stage ${exact##*/}"
       return "$rc"
     fi
   fi
@@ -89,7 +89,7 @@ load_ko_for_kernel() {
     ui_print "  [*] Trying fallback: ${mod##*/}"
     try_load_ko "$mod"; rc=$?
     if [ "$rc" = 0 ] || { [ "$rc" = 3 ] && [ -n "$unproven" ]; }; then
-      mv "$mod" "$MODPATH/lkm/nomount.ko"
+      mv "$mod" "$MODPATH/lkm/nomount.ko" || abort "! Could not stage ${mod##*/}"
       return "$rc"
     fi
   done
