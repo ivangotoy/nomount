@@ -278,6 +278,23 @@ printf '#!/bin/sh\n# old nm\ncase $1 in version) [ -e "$NM_STUB_LOG.loaded" ] ||
 NM_STUB_NO_DRIVER=1 KSUD_OK=lkm/nomount.ko inst; rc=$?
 [ "$rc" -eq 0 ] && grep -q '# old nm' "$I/bin/nm" && cmp -s "$I/bin/nmlock" "$M/bin/nm" && ok "customize.sh: previous driver restored -> new nm kept as bin/nmlock" ||
     { bad "customize.sh previous driver restored, nmlock (rc=$rc)"; cat "$W/inst.out"; }
+# bin/nmlock cannot be written: the previous nm must not be put back without it (boot would run unlocked)
+mkdir -p "$W/lockfail"
+printf '#!/bin/sh\ncase "$2" in */bin/nmlock) printf partial > "$2"; chmod 755 "$2"; echo "cp: write error: No space left on device" >&2; exit 1 ;; esac\nexec /bin/cp "$@"\n' > "$W/lockfail/cp"
+chmod +x "$W/lockfail/cp"
+for case in rejected restored; do
+    reset_state; old_module OLD
+    if [ "$case" = rejected ]; then
+        old_nm; echo 'nomount 65536 0 - Live 0x0' > "$W/proc-modules"
+        PATH="$W/lockfail:$PATH" NM_STUB_NO_DRIVER=1 inst; rc=$?
+    else
+        : > "$W/proc-modules"
+        printf '#!/bin/sh\n# old nm\ncase $1 in version) [ -e "$NM_STUB_LOG.loaded" ] || exit 1; echo 23 ;; esac\nexit 0\n' > "$W/old/bin/nm"
+        PATH="$W/lockfail:$PATH" NM_STUB_NO_DRIVER=1 KSUD_OK=lkm/nomount.ko inst; rc=$?
+    fi
+    if ! grep -q '# old nm' "$I/bin/nm" 2>/dev/null && [ ! -e "$I/bin/nmlock" ]; then ok "customize.sh: $case, bin/nmlock not written -> previous nm not put back, no partial nmlock (rc=$rc)"
+    else bad "customize.sh: $case, previous nm put back without bin/nmlock (rc=$rc)"; cat "$W/inst.out"; fi
+done
 reset_state; old_module OLD; echo 'nomount 65536 0 - Live 0x0' > "$W/proc-modules"; export KSUD_EXISTS=1
 inst; rc=$?; unset KSUD_EXISTS
 [ "$rc" -eq 0 ] && [ ! -e "$I/bin/nmlock" ] && ok "customize.sh: zip's nm kept -> no bin/nmlock" || { bad "customize.sh nmlock without old nm (rc=$rc)"; cat "$W/inst.out"; }
