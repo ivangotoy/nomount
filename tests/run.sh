@@ -748,6 +748,10 @@ if have python3 && have git; then
 else
     skp "module-release.yml dispatched-commit check (python3/git missing)"
 fi
+# one release at a time (two runs would read the same published versionCode), a running one is never cancelled
+awk '/^concurrency:/ { on = 1; next } on && /^[^ ]/ { on = 0 } on' "$R/.forgejo/workflows/module-release.yml" > "$W/concurrency"
+grep -qE '^  group: [^ ]+' "$W/concurrency" && grep -qx '  cancel-in-progress: false' "$W/concurrency" &&
+    ok "module-release.yml: one release run at a time, a running one is not cancelled" || bad "module-release.yml: no top-level concurrency group with cancel-in-progress: false"
 
 echo "summary: $pass passed, $fail failed, $skip skipped"
 [ "$fail" -eq 0 ]

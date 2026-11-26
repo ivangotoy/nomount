@@ -7,6 +7,12 @@ name: module-release
 on:
   workflow_dispatch:
 
+# one release at a time: two runs would both read the same published versionCode; a running release
+# is never cancelled half way
+concurrency:
+  group: module-release
+  cancel-in-progress: false
+
 jobs:
   release:
     runs-on: kernelsu-ci
