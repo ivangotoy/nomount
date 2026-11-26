@@ -66,6 +66,21 @@ and a lot of other misc changes :)
 - kernel/setup.sh: re-running it with a branch name fast-forwards an existing clone to that branch (fails, keeping local commits, if they diverged).
 - CI: a stalled download in the build fails instead of holding the release job.
 
+Since the previous fork release:
+- module/: the installer stops (the installed module stays as it is) when it cannot copy the running driver's `.ko` or move `nm`, `lkmloader` or the loaded `.ko` into place; before, it completed and the module had no driver or no `nm`.
+- module/: when the boot falls back to the previous driver and `/data` is full, the fallback `.ko` is moved into the module instead of leaving the rejected one there; the installer saves the boot fallback through a temp file, so a failed save keeps the one that was there.
+- module/: the previous `nm` is put back only together with `bin/nmlock`, so boot never runs without its locks.
+- module/: when both boot scripts load the driver at once, the one whose load answers "File exists" keeps the driver the other loaded instead of unloading it or disabling the module.
+- module/: a hot install that cannot move the update into place keeps it for the next boot instead of losing the module.
+- webui/: a failed write of the exclusions or the theme no longer leaves a `.tmp` file.
+- kernel/setup.sh: fails when `fs/Kconfig` cannot be rewritten (it used to report success); the usage says what a run without arguments checks out.
+- CI: the build user's processes are ended after a failed build too, a draft release request that failed or lost its reply is logged, the job builds the dispatched commit when `main` has moved, and a locale file that cannot be minified fails the build.
+- Also in this release: upstream's kernel changes on dev after v2.3.1 (#129, #130, #131, #133 and the rebind of a replaced backing file).
+
+Notes:
+- The `x86_64` `.ko` files are built against a generic `x86_64_defconfig` kernel tree without the KMI's `Module.symvers`: they carry no symbol versions, are best-effort and are not load-tested. The `arm64` `.ko` files are built against each KMI's own tree.
+- Kernel fixes reach a kernel with NoMount built in (`CONFIG_NOMOUNT=y`) only when that kernel is rebuilt from the new `kernel/src`; this zip updates the loadable `.ko`, `nm`, the scripts and the WebUI, not a built-in driver.
+
 #### Thanks to everyone who kept testing, contributing and reporting through this one: @ZQZCC, @sohan-f, and the testers on the Telegram group 🫂
 
 **Full Changelog**: https://github.com/maxsteeel/nomount/compare/v2.3.0-720...v2.3.1
