@@ -117,6 +117,13 @@ Instead of scoping rules, you can globally isolate a UID so it sees the stock fi
 | `nm uid clear` | Clear all isolated UIDs. |
 | `nm uid block_isolated on/off` | Toggle blocking for Android isolated processes (UIDs 90000-99999). |
 
+### Module Commands
+| Command | Description |
+| --- | --- |
+| `nm module load <mod_path> [--targets="system vendor ..."]` | Inject every partition of a module (default: all known partitions). |
+| `nm module unload <mod_path> [--targets="..."]` | Remove all rules belonging to a module. |
+| `nm module list [--only=<a,b,...>]` | List the modules in `/data/adb/modules` with their injected file count (JSON). |
+
 ### General Commands
 | Command | Description |
 | --- | --- |
