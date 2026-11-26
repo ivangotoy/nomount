@@ -61,6 +61,18 @@ while [ "$1" != -o ]; do shift; done; echo payload > "$2"
     rc=$?; [ "$rc" -ne 0 ] && ! grep -q reached "$W/f.out" && ok "fetch(): sha256 mismatch stops the build" || bad "fetch() bad hash (rc=$rc)"
 fi
 
+# build()'s locale minify loop (cut from module-ci.conf) under the build's set -euo pipefail: a jq that fails
+# stops the build and leaves no .json.tmp for the zip
+if have bash && grep -q 'jq -c \. ' "$C"; then
+    mkdir -p "$W/jq/bin" "$W/jq/M/webroot/locales"; echo '{"a": 1}' > "$W/jq/M/webroot/locales/en.json"
+    printf '#!/bin/sh\necho "jq: error" >&2\nexit 3\n' > "$W/jq/bin/jq"; chmod +x "$W/jq/bin/jq"
+    # the line goes into the script text (eval would turn its status into a failed simple command)
+    { printf 'set -euo pipefail\nminify() {\nM=$1\n'; grep 'jq -c \. ' "$C"; printf ': the rest of build\n}\nminify "$1"\necho reached\n'; } > "$W/jq/build.sh"
+    PATH="$W/jq/bin:$PATH" bash "$W/jq/build.sh" "$W/jq/M" > "$W/jq.out" 2>&1
+    rc=$?; [ "$rc" -ne 0 ] && ! grep -q reached "$W/jq.out" && [ -z "$(ls "$W/jq/M/webroot/locales" | grep '\.tmp$')" ] &&
+        ok "module-ci.conf: failed locale minify stops build(), no temp file" || bad "module-ci.conf: failed locale minify (rc=$rc): $(ls "$W/jq/M/webroot/locales" | tr '\n' ' ')"
+fi
+
 # --- lkmloader: make names the arm64 build lkmloader-aarch64, customize.sh moves bin/lkmloader-$ARCH_BIN (arm64)
 for f in "$R/.github/workflows/build.yml" "$R/.forgejo/module-ci.conf"; do
     if grep -q 'make TARGET=aarch64' "$f"; then
