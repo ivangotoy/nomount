@@ -155,13 +155,13 @@ elif [ "$LKM_RUNNING" = true ]; then
     ui_print "  [*] No new KO shipped; keeping the running driver as is."
     if [ -f "$OLD_MODPATH/lkm/nomount.ko" ]; then
       mkdir -p "$MODPATH/lkm"
-      cp "$OLD_MODPATH/lkm/nomount.ko" "$MODPATH/lkm/nomount.ko"
+      cp "$OLD_MODPATH/lkm/nomount.ko" "$MODPATH/lkm/nomount.ko" || abort "! Could not keep the running driver's KO"
     fi
   else
     ui_print "  [!] New driver failed verification; keeping the running one."
     if [ -f "$OLD_MODPATH/lkm/nomount.ko" ]; then
       mkdir -p "$MODPATH/lkm"
-      cp "$OLD_MODPATH/lkm/nomount.ko" "$MODPATH/lkm/nomount.ko"
+      cp "$OLD_MODPATH/lkm/nomount.ko" "$MODPATH/lkm/nomount.ko" || abort "! Could not keep the running driver's KO"
       # the old nm only when the new one cannot talk to the running driver
       if ! "$MODPATH/bin/nm" version >/dev/null 2>&1; then
         cp "$MODPATH/bin/nm" "$MODPATH/bin/nmlock" && set_perm "$MODPATH/bin/nmlock" 0 0 0755

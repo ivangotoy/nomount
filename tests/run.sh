@@ -296,6 +296,18 @@ if [ "$rc" -eq 0 ] && [ "$(cat "$I/lkm/nomount.ko" 2>/dev/null)" = OLD ] && grep
    [ ! -e "$I/lkm/nomount-android14-6.1.ko" ]; then ok "customize.sh: running driver, no ko for this kernel -> running ko kept for boot"
 else bad "customize.sh running driver + no ko shipped (rc=$rc)"; cat "$W/inst.out"; fi
 
+# running driver, new ko not used: when the running driver's ko cannot be copied into the new module
+# (full /data), the install must fail instead of leaving a module without a driver for the next boot
+mkdir -p "$W/cpfail"
+printf '#!/bin/sh\ncase "$1" in */old/lkm/nomount.ko) echo "cp: write error: No space left on device" >&2; exit 1 ;; esac\nexec /bin/cp "$@"\n' > "$W/cpfail/cp"
+chmod +x "$W/cpfail/cp"
+for ko in nomount-android14-6.1.ko nomount-android15-6.6.ko; do
+    reset_state; old_module OLD; echo 'nomount 65536 0 - Live 0x0' > "$W/proc-modules"
+    PATH="$W/cpfail:$PATH" INST_KO=$ko inst; rc=$?
+    if [ "$rc" -ne 0 ] && grep -q 'ABORT' "$W/inst.out"; then ok "customize.sh: running driver, $ko, running ko not copied -> install fails"
+    else bad "customize.sh running driver, $ko, failed copy of the running ko (rc=$rc)"; cat "$W/inst.out"; fi
+done
+
 reset_state; old_module OLD; : > "$W/proc-modules"; echo stale > "$D/nomount-fallback.ko"
 NM_STUB_NO_DRIVER=1 KSUD_OK=nomount-android15-6.6.ko inst; rc=$?
 if [ "$rc" -eq 0 ] && [ "$(cat "$I/lkm/nomount.ko")" = NEW ] && [ ! -e "$D/nomount-fallback.ko" ] && grep -q 'ready for injection' "$W/inst.out"; then
