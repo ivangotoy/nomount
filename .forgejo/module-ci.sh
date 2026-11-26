@@ -17,7 +17,8 @@
 #   UPSTREAM_URL, UPSTREAM_BRANCH   upstream merged into main ("" = none)
 #   ZIP_PREFIX                      release zip name prefix
 #   VERSION_CODE_FLOOR              lowest versionCode allowed to release
-#   VERSION_CODE_OFFSET             added to the built versionCode (default 0)
+#   VERSION_CODE_OFFSET             added to the built versionCode (default 0); the result is raised
+#                                   above main's update.json and the published releases
 #   UPDATE_JSON_PATH                update.json path in main (default .forgejo/update.json)
 #   SYNC_ROOT_PROP                  fork-owned module.prop in main kept at the released version
 #   CHANGELOG_PATH                  changelog file in the tree ("" = none)
@@ -176,6 +177,27 @@ BUILT_VC="$(prop_get versionCode "$REL/built.prop")"
 case "$BUILT_VC" in ''|*[!0-9]*) die "built versionCode '$BUILT_VC' is not a number" ;; esac
 VERSION="$(printf '%s' "$BUILT_VERSION" | sed -E 's/-(fork|ci)[0-9]+$//')-ci$RUN_NUMBER"
 VC=$((BUILT_VC + VERSION_CODE_OFFSET))
+# the updater offers only a versionCode above the one it knows: stay above main's update.json (read at
+# main's tip, the branch update.json is pushed to) and every published release (a re-dispatch of the same
+# commit, or a build whose count did not grow); anything unreadable stops here, before a release exists
+LAST_VC=0
+if git cat-file -e "main:$UPDATE_JSON_PATH" 2>/dev/null; then
+    LAST_VC="$(git show "main:$UPDATE_JSON_PATH" | python3 -I -c 'import json,sys
+v=json.load(sys.stdin)["versionCode"]
+if type(v) is not int or v < 0: sys.exit("versionCode is not a non-negative integer")
+print(v)')" || die "$UPDATE_JSON_PATH on main has no integer versionCode"
+fi
+REL_VC="$(api GET "/releases?limit=50" | python3 -I -c 'import json,re,sys
+best=0
+for r in json.load(sys.stdin):
+    m=None if r.get("draft") else re.search(r"^versionCode ([0-9]+)$", r.get("body") or "", re.M)
+    if m: best=max(best, int(m.group(1)))
+print(best)')" || die "release list unreadable"
+[ "$REL_VC" -le "$LAST_VC" ] || LAST_VC="$REL_VC"
+if [ "$VC" -le "$LAST_VC" ]; then
+    log "versionCode $VC is not above the published $LAST_VC: shipping $((LAST_VC + 1))"
+    VC=$((LAST_VC + 1))
+fi
 [ "$VC" -ge "$VERSION_CODE_FLOOR" ] || die "versionCode $VC is below the floor $VERSION_CODE_FLOOR"
 TAG="$(printf '%s' "$VERSION" | sed -E 's/[^A-Za-z0-9._-]+/-/g; s/-+/-/g; s/^-//; s/-$//')"
 case "$TAG" in v*) ;; *) TAG="v$TAG" ;; esac

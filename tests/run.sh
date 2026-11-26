@@ -626,6 +626,73 @@ EOF
     build_step failed
 fi
 
+# --- release mode end to end against an offline fake forge: the versionCode it ships must exceed the one main's
+# update.json and the published releases already offer. The forge repo is a local bare repo (file://), the
+# API is a curl stub that logs every call and its argv; nothing leaves the test dir.
+if have bash && have python3 && have git && have zip && have unzip; then
+    RV="$W/relvc"
+    # rel_vc <case> <update.json content or ""> [env...]: runs `module-ci.sh release`, sets rv_rc
+    rel_vc() {
+        _c=$RV/$1; _uj=$2; shift 2
+        rm -rf "$_c"; mkdir -p "$_c/stub" "$_c/seed/.forgejo" "$_c/work/.ci-out" "$_c/job" "$_c/forge/owner" "$_c/zip"
+        export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+        printf 'ZIP_PREFIX=Mod\nVERSION_CODE_FLOOR=0\nVERSION_CODE_OFFSET=5\n' > "$_c/seed/.forgejo/module-ci.conf"
+        [ -n "$_uj" ] && printf '%s\n' "$_uj" > "$_c/seed/.forgejo/update.json"
+        git init -q --bare "$_c/forge/owner/repo.git" && git init -q "$_c/seed" &&
+            (cd "$_c/seed" && git add -A && git -c user.name=t -c user.email=t@example.invalid commit -qm seed &&
+             git push -q "$_c/forge/owner/repo.git" HEAD:refs/heads/main) || { rv_rc=99; return; }
+        _base=$(git -C "$_c/seed" rev-parse HEAD)
+        printf '%s\n\n' "$_base" > "$_c/work/.ci-out/src"; echo x > "$_c/work/.ci-out/desc"
+        printf 'id=mod\nversion=v1.0 (100-abc-dev)\nversionCode=100\n' > "$_c/zip/module.prop"
+        (cd "$_c/zip" && zip -q "$_c/work/.ci-out/module.zip" module.prop)
+        cat > "$_c/stub/curl" <<'EOF'
+#!/bin/sh
+m=GET; o=; w=; att=; prev=; u=
+for a in "$@"; do case $prev in -X) m=$a ;; -o) o=$a ;; -w) w=1 ;; -F) att=${a#attachment=@} ;; esac; prev=$a; u=$a; done
+echo "$m $u" >> "$C/calls"; echo "$*" >> "$C/argv"
+[ -n "$w" ] && { printf 404; exit 0; }
+case "$m $u" in
+    "GET "*"/releases?"*) [ -n "${LIST_FAIL:-}" ] && { echo "forge error" >&2; exit 22; }; printf '%s' "${LIST_JSON:-[]}" ;;
+    "POST "*"/releases/7/assets"*) cp "$att" "$C/asset.zip"; printf '{"id": 9}' ;;
+    "POST "*"/releases") printf '{"id": 7}' ;;
+    "GET "*"/releases/7/assets/9") printf '{"browser_download_url": "https://forge.invalid/dl/asset.zip"}' ;;
+    "GET https://forge.invalid/dl/"*|"GET "*"/releases/download/"*) cp "$C/asset.zip" "$o" ;;
+    "GET "*"/releases/7") printf '{"draft": true}' ;;
+    "PATCH "*|"DELETE "*) printf '{}' ;;
+    "GET "*"/tags/"*) printf '{"commit": {"sha": "%s"}}' "$BASE" ;;
+    "GET "*"/raw/branch/main/"*) git --git-dir="$C/forge/owner/repo.git" show main:.forgejo/update.json ;;
+    *) exit 22 ;;
+esac
+EOF
+        chmod +x "$_c/stub/curl"; : > "$_c/calls"; : > "$_c/argv"
+        (cd "$_c/job" && env PATH="$_c/stub:$PATH" C="$_c" BASE="$_base" TMPDIR="$_c" SERVER_URL="file://$_c/forge" REPOSITORY=owner/repo \
+            BASE_SHA="$_base" RELEASE_TOKEN=tok-SECRET-4711 RUN_NUMBER=7 "$@" bash "$R/.forgejo/module-ci.sh" release "$_c/work") > "$_c/out" 2>&1
+        rv_rc=$?
+        unset GIT_CONFIG_GLOBAL GIT_CONFIG_NOSYSTEM
+        rv_shipped=$(git --git-dir="$_c/forge/owner/repo.git" show main:.forgejo/update.json 2>/dev/null | python3 -I -c 'import json,sys; print(json.load(sys.stdin)["versionCode"])' 2>/dev/null)
+        rv_published=$(grep -c '^POST \|^PATCH ' "$_c/calls")
+        rv_moved=$([ "$(git --git-dir="$_c/forge/owner/repo.git" rev-parse main)" = "$_base" ] && echo no || echo yes)
+        grep -q 'tok-SECRET-4711' "$_c/argv" "$_c/out" && rv_token=leaked || rv_token=clean
+    }
+    rel_vc normal ""
+    [ "$rv_rc" -eq 0 ] && [ "$rv_shipped" = 105 ] && [ "$rv_token" = clean ] && ok "module-ci.sh release: versionCode = built + offset when nothing newer is published" ||
+        { bad "release normal (rc=$rv_rc shipped=$rv_shipped token=$rv_token)"; tail -n 3 "$RV/normal/out"; }
+    rel_vc seeded '{"version": "v1.0-ci6", "versionCode": 105}'
+    [ "$rv_rc" -eq 0 ] && [ "$rv_shipped" = 106 ] && [ "$rv_token" = clean ] && ok "module-ci.sh release: main's update.json already at built + offset -> one more" ||
+        { bad "release seeded update.json (rc=$rv_rc shipped=$rv_shipped)"; tail -n 3 "$RV/seeded/out"; }
+    rel_vc listed "" LIST_JSON='[{"id": 3, "draft": true, "body": "versionCode 900"}, {"id": 2, "draft": false, "body": "Built by module-release #6.\nversionCode 110\nsha256 x"}]'
+    [ "$rv_rc" -eq 0 ] && [ "$rv_shipped" = 111 ] && ok "module-ci.sh release: a published release with a higher versionCode -> one more (drafts ignored)" ||
+        { bad "release listed (rc=$rv_rc shipped=$rv_shipped)"; tail -n 3 "$RV/listed/out"; }
+    rel_vc notnum '{"versionCode": "abc"}'
+    [ "$rv_rc" -ne 0 ] && [ "$rv_published" = 0 ] && [ "$rv_moved" = no ] && ok "module-ci.sh release: non-number versionCode in update.json -> nothing published" ||
+        { bad "release non-number update.json (rc=$rv_rc published=$rv_published pushed=$rv_moved)"; tail -n 3 "$RV/notnum/out"; }
+    rel_vc nolist "" LIST_FAIL=1
+    [ "$rv_rc" -ne 0 ] && [ "$rv_published" = 0 ] && [ "$rv_moved" = no ] && ok "module-ci.sh release: unreadable release list -> nothing published" ||
+        { bad "release unreadable list (rc=$rv_rc published=$rv_published pushed=$rv_moved)"; tail -n 3 "$RV/nolist/out"; }
+else
+    skp "module-ci.sh release versionCode (bash/python3/git/zip/unzip missing)"
+fi
+
 # --- module-release.yml: the job builds the dispatched commit even when main has moved since. The
 # steps whose run text clones or calls `module-ci.sh build` (the merged tree for the kernel modules
 # and the build) run against local bare repos: the fork's main has a commit after BASE_SHA, the
