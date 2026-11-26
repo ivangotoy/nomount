@@ -112,7 +112,9 @@ ensure_lkm_loaded() {
         # kept by customize.sh when the new driver could not be proven at install time
         if [ -f "$NOMOUNT_DATA/nomount-fallback.ko" ] && load_ko "$NOMOUNT_DATA/nomount-fallback.ko"; then
             klogwarn "LKM load failed; loaded the fallback driver and made it the module's driver"
-            cp "$NOMOUNT_DATA/nomount-fallback.ko" "$MODDIR/lkm/nomount.ko"
+            # no room for a copy (full /data): move it, so the module's ko is the running driver's
+            cp "$NOMOUNT_DATA/nomount-fallback.ko" "$MODDIR/lkm/nomount.ko" ||
+                mv -f "$NOMOUNT_DATA/nomount-fallback.ko" "$MODDIR/lkm/nomount.ko"
         else
             klogerr "LKM load failed."
             _lock_release

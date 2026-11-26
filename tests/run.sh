@@ -347,6 +347,16 @@ reset_state; old_module "$(cat "$M/lkm/nomount.ko")"; echo 'nomount 65536 0 - Li
 inst; rc=$?; unset KSUD_EXISTS
 [ "$rc" -eq 0 ] && [ "$(cat "$D/nomount-fallback.ko" 2>/dev/null)" = OLD ] && ok "customize.sh: install after a fallback boot keeps the working driver as fallback" ||
     { bad "customize.sh install after fallback boot (rc=$rc)"; cat "$W/inst.out"; }
+# boot fallback with a full /data: the copy over the module's ko fails half-way; the module's ko must still end
+# up as the driver that runs (the installer takes it for the running driver's ko)
+mkdir -p "$W/fullstub"
+printf '#!/bin/sh\ncase "$2" in $FULL_DEST) : > "$2"; echo "cp: write error: No space left on device" >&2; exit 1 ;; esac\nexec /bin/cp "$@"\n' > "$W/fullstub/cp"
+chmod +x "$W/fullstub/cp"
+reset_state; echo NEW > "$M/lkm/nomount.ko"; echo OLD > "$D/nomount-fallback.ko"
+NM_STUB_NO_DRIVER=1 KSUD_OK=nomount-fallback.ko FULL_DEST='*/lkm/nomount.ko' PATH="$W/fullstub:$K:$PATH" sh "$M/post-fs-data.sh" > "$W/script.out" 2>&1; rc=$?
+if [ "$rc" -eq 0 ] && [ ! -e "$D/disable" ] && [ "$(cat "$M/lkm/nomount.ko")" = OLD ]; then
+    ok "post-fs-data.sh: fallback loaded, copy over the module's ko fails -> module's ko is still the running driver"
+else bad "post-fs-data.sh fallback with a failed copy (rc=$rc, module ko: $(cat "$M/lkm/nomount.ko"))"; cat "$W/script.out"; fi
 reset_state; echo NEW > "$M/lkm/nomount.ko"; echo OLD > "$D/nomount-fallback.ko"
 NM_STUB_NO_DRIVER=1 KSUD_OK=nomount.ko PATH="$K:$PATH" sh "$M/post-fs-data.sh" > "$W/script.out" 2>&1; rc=$?
 if [ "$rc" -eq 0 ] && ! grep -q 'nomount-fallback.ko' "$L" && [ "$(cat "$M/lkm/nomount.ko")" = NEW ]; then ok "post-fs-data.sh: new ko loads -> fallback untouched"
