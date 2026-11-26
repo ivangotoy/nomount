@@ -414,6 +414,19 @@ if [ "$rc" -eq 1 ] && [ -e "$D/disable" ]; then ok "bootloop_check: unfinished p
 else bad "bootloop_check without boot_id, previous boot (rc=$rc)"; cat "$W/script.out"; fi
 rm -f "$S/date"
 
+# --- metainstall.sh hot install of another module: when the update cannot be moved into place it must stay
+# for the next boot (the old module is already deleted). The script's /data/adb paths are hardcoded, so
+# this runs a copy with them pointed into $W; busybox is a stub whose mv fails.
+MI="$W/mi"; mkdir -p "$MI/adb/modules/x" "$MI/adb/modules_update/x" "$MI/bin"
+echo 'id=x old' > "$MI/adb/modules/x/module.prop"; echo 'id=x new' > "$MI/adb/modules_update/x/module.prop"
+sed "s|/data/adb/|$MI/adb/|g" "$R/module/metainstall.sh" > "$MI/metainstall.sh"
+printf '#!/bin/sh\ncase $1 in mv) echo "mv: rename failed: I/O error" >&2; exit 1 ;; esac\nexec "$@"\n' > "$MI/bin/busybox"; chmod +x "$MI/bin/busybox"
+(unset KSU_HAS_HOT_INSTALL; PATH="$MI/bin:$PATH" KSU=true MODID=x MODULE_HOT_INSTALL_REQUEST=true \
+    sh -c 'install_module() { :; }; ui_print() { echo "$*"; }; . "$1"' sh "$MI/metainstall.sh") > "$MI/out" 2>&1
+if [ "$(cat "$MI/adb/modules_update/x/module.prop" 2>/dev/null)" = 'id=x new' ] && ! grep -q 'No need to reboot' "$MI/out"; then
+    ok "metainstall.sh: failed hot install keeps the update for the next boot"
+else bad "metainstall.sh failed hot install (update module.prop: $(cat "$MI/adb/modules_update/x/module.prop" 2>&1))"; cat "$MI/out"; fi
+
 # --- kernel/setup.sh on an existing clone (local bare repo as the remote, no network)
 if have git && realpath --relative-to=/ / >/dev/null 2>&1; then
     G="$W/setup"; mkdir -p "$G/up/kernel/src" "$G/k/fs"

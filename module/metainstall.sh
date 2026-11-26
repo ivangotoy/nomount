@@ -22,7 +22,11 @@ metamodule_hot_install() {
 
 	# hot install
 	busybox rm -rf "$MODDIR_INTERNAL"
-	busybox mv "$MODPATH_INTERNAL" "$MODDIR_INTERNAL"
+	if ! busybox mv "$MODPATH_INTERNAL" "$MODDIR_INTERNAL"; then
+		# the update stays in modules_update and is installed at the next boot
+		ui_print "! Hot install failed, reboot to finish the installation"
+		return
+	fi
 
 	# run script requested, blocking, just fork it yourselves if you want it on background
 	if [ ! -z "$MODULE_HOT_RUN_SCRIPT" ]; then
