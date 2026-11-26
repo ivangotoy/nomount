@@ -589,7 +589,7 @@ async function syncThemeToDisk() {
     const config = { theme: activeTheme, material: isMaterial, color: customColor, seed: _nmSeed || null };
     const jsonStr = JSON.stringify(config);
     const b64 = btoa(unescape(encodeURIComponent(jsonStr)));
-    await exec(`mkdir -p ${NM_DATA} && echo ${shellQuote(b64)} | base64 -d > ${FILES.theme}.tmp && mv -f ${FILES.theme}.tmp ${FILES.theme}`);
+    await exec(`mkdir -p ${NM_DATA} && echo ${shellQuote(b64)} | base64 -d > ${FILES.theme}.tmp && mv -f ${FILES.theme}.tmp ${FILES.theme} || { rm -f ${FILES.theme}.tmp; false; }`);
 }
 
 async function restoreThemeFromDisk() {
@@ -994,7 +994,7 @@ function parseExclusionsJson(text) {
 async function writeExclusionsJson(dataArray) {
     const jsonStr = JSON.stringify(dataArray);
     const b64 = btoa(unescape(encodeURIComponent(jsonStr))); 
-    const cmd = `mkdir -p ${NM_DATA} && echo ${shellQuote(b64)} | base64 -d > ${FILES.exclusions}.tmp && mv -f ${FILES.exclusions}.tmp ${FILES.exclusions}`;
+    const cmd = `mkdir -p ${NM_DATA} && echo ${shellQuote(b64)} | base64 -d > ${FILES.exclusions}.tmp && mv -f ${FILES.exclusions}.tmp ${FILES.exclusions} || { rm -f ${FILES.exclusions}.tmp; false; }`;
     return await exec(cmd);
 }
 

@@ -57,5 +57,37 @@ const api = run(async (c) => { cmds.push(c); return { errno: 0, stdout: '', stde
     cmds.length = 0;
     await api.addExclusion('10123', 'x', 'p');
     if (!cmds.includes('/nm uid add 10123')) fail(`numeric uid not passed through: ${JSON.stringify(cmds)}`);
+
+    // the exclusion and theme writers run in sh against a data dir in $TMPDIR, with a base64 that writes
+    // half a file and fails (full /data): the command fails and leaves no temp file behind
+    const os = require('os'), path = require('path'), { spawnSync } = require('child_process');
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'nm-webui-'));
+    try {
+        const bin = path.join(tmp, 'bin'), data = path.join(tmp, 'data');
+        fs.mkdirSync(bin);
+        fs.writeFileSync(path.join(bin, 'base64'), '#!/bin/sh\nprintf half\nexit 1\n', { mode: 0o755 });
+        const writers = new Function('exec', 'activeTheme', 'isMaterial', 'customColor', '_nmSeed', 'nmThemeDirty',
+            [pick(/const NM_DATA = .*\n/), pick(/const FILES = .*\n/), pick(/const shellQuote = .*\n/),
+             extract('writeExclusionsJson'), extract('syncThemeToDisk'), 'return { writeExclusionsJson, syncThemeToDisk };'].join('\n'));
+        const written = [];
+        const w = writers(async (c) => { written.push(c); return { errno: 0 }; }, 'dark', true, '#000000', null, false);
+        await w.writeExclusionsJson([{ uid: '10123' }]);
+        await w.syncThemeToDisk();
+        if (written.length !== 2) fail(`writers built ${written.length} commands`);
+        for (const c of written) {
+            const local = c.split('/data/adb/nomount').join(data);
+            fs.rmSync(data, { recursive: true, force: true });
+            const r = spawnSync('sh', ['-c', local], { env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } });
+            const left = fs.existsSync(data) ? fs.readdirSync(data) : [];
+            if (r.status === 0 || left.length) fail(`failed write: exit ${r.status}, left ${JSON.stringify(left)}: ${c.slice(0, 60)}`);
+            // and with the real base64 the same command writes the file
+            fs.rmSync(data, { recursive: true, force: true });
+            const ok = spawnSync('sh', ['-c', local]);
+            const files = fs.existsSync(data) ? fs.readdirSync(data) : [];
+            let parsed = false;
+            try { parsed = files.length === 1 && !files[0].endsWith('.tmp') && !!JSON.parse(fs.readFileSync(path.join(data, files[0]), 'utf8')); } catch (e) {}
+            if (ok.status !== 0 || !parsed) fail(`write: exit ${ok.status}, files ${JSON.stringify(files)} ${ok.stderr}: ${c.slice(0, 60)}`);
+        }
+    } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
     process.exit(failures ? 1 : 0);
 })().catch((e) => { console.log('FAIL ' + e.stack); process.exit(1); });
