@@ -113,6 +113,13 @@ if [ "$MODE" = build ]; then
     # nothing the build user started outlives the build, whether it failed or not
     setpriv --reuid="$BUILD_UID" --regid="$BUILD_UID" --clear-groups kill -9 -1 2>/dev/null || true
     [ "${build_rc:-0}" = 0 ] || die "build failed"
+    # OUT belonged to the build user until the kill above: a link left in it would turn the read
+    # and the write below into root's read or write of any file. Only a real directory and,
+    # for each name, nothing or a regular file are used.
+    [ -d "$OUT" ] && [ ! -L "$OUT" ] || die "$OUT is not a directory"
+    for f in module.zip upstream-desc desc; do
+        [ ! -L "$OUT/$f" ] && { [ ! -e "$OUT/$f" ] || [ -f "$OUT/$f" ]; } || die "$OUT/$f is not a regular file"
+    done
     [ -f "$OUT/module.zip" ] || die "build left no $OUT/module.zip"
     [ -f "$OUT/upstream-desc" ] && DESC="$(head -n1 "$OUT/upstream-desc")"
     printf '%s\n' "$DESC" > "$OUT/desc"
